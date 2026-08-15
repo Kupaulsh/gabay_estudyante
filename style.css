@@ -18,6 +18,7 @@
   --shadow:0 6px 24px rgba(32,39,43,.08);
   --shadow-lg:0 14px 40px rgba(32,39,43,.16);
   --gear-size:46px;
+  --topbar-h:64px;
 }
 *{box-sizing:border-box;}
 html,body{margin:0;padding:0;}
@@ -27,6 +28,9 @@ body{
   font-family:'Inter',sans-serif;
   min-height:100vh;
   -webkit-font-smoothing:antialiased;
+  padding-bottom:env(safe-area-inset-bottom);
+  padding-left:env(safe-area-inset-left);
+  padding-right:env(safe-area-inset-right);
 }
 h1,h2,h3,h4{font-family:'Manrope',sans-serif;margin:0 0 6px;letter-spacing:-.01em;}
 p{margin:0 0 10px;line-height:1.5;}
@@ -43,7 +47,7 @@ a{color:var(--accent);}
   flex-direction:column;
   align-items:center;
   justify-content:center;
-  padding:32px 20px;
+  padding:calc(32px + env(safe-area-inset-top)) 20px 32px;
   text-align:center;
   gap:26px;
 }
@@ -96,7 +100,7 @@ a{color:var(--accent);}
 }
 
 /* ---------- APP SHELL ---------- */
-#app{display:none;min-height:100vh;flex-direction:column;}
+#app{display:none;min-height:100vh;flex-direction:column;padding-top:calc(96px + env(safe-area-inset-top));}
 #app.active{display:flex;}
 #adminBanner{
   display:none;
@@ -112,11 +116,12 @@ body.is-admin #adminBanner{display:flex;}
 #adminBanner button:hover{background:rgba(255,255,255,.28);}
 
 .topbar{
-  position:sticky;top:0;z-index:20;
+  position:fixed;top:0;left:0;right:0;
+  z-index:20;
   background:rgba(246,245,240,.92);
   backdrop-filter:blur(8px);
   border-bottom:1px solid var(--line);
-  padding:14px 94px 14px 20px;
+  padding:calc(14px + env(safe-area-inset-top)) 94px 14px 20px;
   display:flex;align-items:center;justify-content:space-between;
   gap:12px;
 }
@@ -151,7 +156,7 @@ main{flex:1;width:100%;max-width:920px;margin:0 auto;padding:26px 20px 140px;}
 
 /* ---------- GEAR NAV ---------- */
 #gearNav{
-  position:fixed;right:22px;top:14px;z-index:50;display:none;
+  position:fixed;right:calc(22px + env(safe-area-inset-right));top:calc(14px + env(safe-area-inset-top));z-index:50;display:none;
 }
 #gearBtn{
   width:var(--gear-size);height:var(--gear-size);border-radius:50%;

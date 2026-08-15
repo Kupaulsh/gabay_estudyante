@@ -20,18 +20,77 @@ function setSignInStatus(msg){
   const el = document.getElementById('signInStatus');
   if(el) el.textContent = msg;
 }
+let signInInFlight = false;
 async function signInWithGoogle(){
+  if(signInInFlight) return; // ignore accidental double-taps
+  signInInFlight = true;
   setSignInStatus('Redirecting to Google…');
-  const {error} = await supabase.auth.signInWithOAuth({
-    provider: 'google',
-    options: { redirectTo: window.location.href.split('#')[0].split('?')[0] }
-  });
-  if(error) setSignInStatus('Sign-in error: ' + error.message);
+  const isNative = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+
+  if(isNative){
+    // Native app: open Google sign-in in the in-app browser, then catch the
+    // redirect back via the app's custom URL scheme (see capacitor.config.json).
+    const {data, error} = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: 'com.gabayestudyante.app://callback', skipBrowserRedirect: true }
+    });
+    if(error){ setSignInStatus('Sign-in error: ' + error.message); signInInFlight = false; return; }
+    window.Capacitor.Plugins.Browser.open({ url: data.url });
+  } else {
+    const {error} = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: window.location.href.split('#')[0].split('?')[0] }
+    });
+    if(error){ setSignInStatus('Sign-in error: ' + error.message); }
+    signInInFlight = false;
+  }
 }
-async function checkAdminSession(){
+// Native app only: catches the browser redirecting back to com.gabayestudyante.app://callback
+let handlingOAuthRedirect = false;
+if(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()){
+  window.Capacitor.Plugins.App.addListener('appUrlOpen', async ({url})=>{
+    if(handlingOAuthRedirect) return; // ignore duplicate fires of the same redirect
+    if(url.includes('access_token') || url.includes('code=')){
+      handlingOAuthRedirect = true;
+      setSignInStatus('Returned from Google, verifying…');
+      await window.Capacitor.Plugins.Browser.close();
+      try{
+        const parsed = new URL(url);
+        const authCode = parsed.searchParams.get('code');
+        const hashParams = new URLSearchParams(parsed.hash.replace(/^#/, ''));
+        const accessToken = hashParams.get('access_token');
+        const refreshToken = hashParams.get('refresh_token');
+
+        if(authCode){
+          setSignInStatus('Exchanging code for session…');
+          const {error: exErr} = await supabase.auth.exchangeCodeForSession(authCode);
+          if(exErr){ setSignInStatus('Exchange failed: ' + exErr.message); return; }
+        } else if(accessToken){
+          setSignInStatus('Setting session…');
+          const {error: setErr} = await supabase.auth.setSession({access_token: accessToken, refresh_token: refreshToken});
+          if(setErr){ setSignInStatus('Set session failed: ' + setErr.message); return; }
+        } else {
+          setSignInStatus('No code or access_token found in redirect URL: ' + url.slice(0,150));
+          return;
+        }
+        setSignInStatus('Checking admin access…');
+        await checkAdminSession(true);
+      } catch(e){
+        setSignInStatus('Sign-in error: ' + e.message);
+      } finally {
+        signInInFlight = false;
+        handlingOAuthRedirect = false;
+      }
+    }
+  });
+}
+async function checkAdminSession(forceStatus){
   const {data:{session}} = await supabase.auth.getSession();
-  if(!session) return;
-  const pending = sessionStorage.getItem('shAdminPending');
+  const pending = forceStatus || sessionStorage.getItem('shAdminPending');
+  if(!session){
+    if(pending) setSignInStatus('No active session found after sign-in — please try again.');
+    return;
+  }
 
   const {data:isAdminResult, error} = await supabase.rpc('is_admin');
   if(error){ if(pending) setSignInStatus('Error checking admin status: ' + error.message); return; }

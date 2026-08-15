@@ -69,11 +69,24 @@ async function enterApp(school){
   buildGearItems();
   document.getElementById('gearNav').style.display='block';
   goPage('hub');
+  syncTopbarSpacer();
+  await initNotifications();
+  scheduleAllNotifications();
 }
+function syncTopbarSpacer(){
+  const topbar = document.querySelector('.topbar');
+  const app = document.getElementById('app');
+  if(!topbar || !app) return;
+  requestAnimationFrame(()=>{
+    app.style.paddingTop = topbar.offsetHeight + 'px';
+  });
+}
+window.addEventListener('resize', syncTopbarSpacer);
 async function refreshCurrentSchool(){
   if(!currentSchool) return;
   DATA[currentSchool] = await loadSchoolData(currentSchool);
   applyTheme(currentSchool);
+  scheduleAllNotifications();
 }
 function goLanding(){
   document.getElementById('app').classList.remove('active');
@@ -83,6 +96,7 @@ function goLanding(){
   closeGear();
 }
 function openSchoolMenu(){
+  if(!S()) return; // data not loaded yet
   const other = currentSchool==='pccm' ? 'tup' : 'pccm';
   const otherName = other.toUpperCase();
   openModal(`

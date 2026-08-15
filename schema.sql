@@ -11,7 +11,9 @@ create extension if not exists pgcrypto;
 -- ------------------------------------------------------------
 create table if not exists schools (
   id text primary key,              -- 'pccm' or 'tup'
-  full_name text not null
+  full_name text not null,
+  accent_color text not null default '#2F6F5E',
+  bg_color text not null default '#F6F5F0'
 );
 
 insert into schools (id, full_name) values
@@ -27,12 +29,19 @@ create table if not exists subjects (
   school_id text not null references schools(id) on delete cascade,
   code text not null default '',
   name text not null default 'New Subject',
-  professor text default '',
-  room text default '',
-  day text default 'Mon',
-  time text default '',
   color text default '#2F6F5E',
   created_at timestamptz default now()
+);
+
+-- A subject can meet more than once a week (e.g. lecture Mon + lab Wed),
+-- so each meeting time is its own row here rather than columns on subjects.
+create table if not exists schedule_slots (
+  id uuid primary key default gen_random_uuid(),
+  subject_id uuid not null references subjects(id) on delete cascade,
+  day text default 'Mon',
+  time text default '',
+  room text default '',
+  professor text default ''
 );
 
 create table if not exists syllabus_files (
@@ -55,7 +64,8 @@ create table if not exists flashcards (
   id uuid primary key default gen_random_uuid(),
   subject_id uuid not null references subjects(id) on delete cascade,
   question text not null,
-  answer text not null
+  answer text not null,
+  image_url text default ''
 );
 
 create table if not exists quiz_questions (
@@ -64,7 +74,17 @@ create table if not exists quiz_questions (
   question text not null,
   choices text[] not null,
   correct_index int not null,
-  difficulty text default 'Easy'
+  difficulty text default 'Easy',
+  image_url text default ''
+);
+
+-- PDF Books: distinct from "Materials" — for book-length references per subject
+create table if not exists pdf_books (
+  id uuid primary key default gen_random_uuid(),
+  subject_id uuid not null references subjects(id) on delete cascade,
+  label text not null,
+  author text default '',
+  url text not null
 );
 
 -- ------------------------------------------------------------
@@ -92,8 +112,13 @@ create table if not exists activities (
   start_date date,
   due_date date,
   instructions text default '',
-  tags text[] default '{}'
+  tags text[] default '{}',
+  image_url text default ''
 );
+
+-- Links an auto-generated calendar event back to the activity that created it,
+-- so editing/deleting an activity keeps its calendar entries in sync.
+alter table events add column if not exists source_activity_id uuid references activities(id) on delete cascade;
 
 -- ------------------------------------------------------------
 -- FAQs (How-To page)
@@ -164,6 +189,8 @@ $$;
 alter table schools enable row level security;
 alter table subjects enable row level security;
 alter table syllabus_files enable row level security;
+alter table pdf_books enable row level security;
+alter table schedule_slots enable row level security;
 alter table materials enable row level security;
 alter table flashcards enable row level security;
 alter table quiz_questions enable row level security;
@@ -176,8 +203,11 @@ alter table admins enable row level security;
 
 -- Public read policies
 create policy "public read schools" on schools for select using (true);
+create policy "admin write schools" on schools for update using (is_admin()) with check (is_admin());
 create policy "public read subjects" on subjects for select using (true);
 create policy "public read syllabus_files" on syllabus_files for select using (true);
+create policy "public read pdf_books" on pdf_books for select using (true);
+create policy "public read schedule_slots" on schedule_slots for select using (true);
 create policy "public read materials" on materials for select using (true);
 create policy "public read flashcards" on flashcards for select using (true);
 create policy "public read quiz_questions" on quiz_questions for select using (true);
@@ -190,13 +220,15 @@ create policy "public read guidelines" on guidelines for select using (true);
 -- Admin-only write policies (insert/update/delete)
 create policy "admin write subjects" on subjects for all using (is_admin()) with check (is_admin());
 create policy "admin write syllabus_files" on syllabus_files for all using (is_admin()) with check (is_admin());
+create policy "admin write pdf_books" on pdf_books for all using (is_admin()) with check (is_admin());
+create policy "admin write schedule_slots" on schedule_slots for all using (is_admin()) with check (is_admin());
 create policy "admin write materials" on materials for all using (is_admin()) with check (is_admin());
 create policy "admin write flashcards" on flashcards for all using (is_admin()) with check (is_admin());
 create policy "admin write quiz_questions" on quiz_questions for all using (is_admin()) with check (is_admin());
 create policy "admin write events" on events for all using (is_admin()) with check (is_admin());
 create policy "admin write activities" on activities for all using (is_admin()) with check (is_admin());
 create policy "admin write faqs" on faqs for all using (is_admin()) with check (is_admin());
-create policy "admin write rules" on rules for update using (is_admin()) with check (is_admin());
+create policy "admin write rules" on rules for all using (is_admin()) with check (is_admin());
 create policy "admin write guidelines" on guidelines for all using (is_admin()) with check (is_admin());
 
 -- Nobody can read the admins table directly from the client (is_admin() reads it internally instead).
