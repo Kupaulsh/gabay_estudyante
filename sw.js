@@ -1,9 +1,9 @@
 /* Gabay Estudyante — service worker (web version only)
    Keeps the app files available offline. Online it always tries the network
    first, so updates show up straight away; offline it falls back to the saved copy. */
-const CACHE = 'gabay-shell-v1';
+const CACHE = 'gabay-shell-v2';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'admin.js', 'data.js', 'notifications.js',
-  'supabase-client.js', 'vendor-supabase.js'];
+  'supabase-client.js', 'vendor-supabase.js', 'GaEs_Icon.png'];
 
 self.addEventListener('install', e=>{
   e.waitUntil(caches.open(CACHE).then(c=>c.addAll(SHELL).catch(()=>{})).then(()=>self.skipWaiting()));
