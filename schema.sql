@@ -231,6 +231,48 @@ create policy "admin write faqs" on faqs for all using (is_admin()) with check (
 create policy "admin write rules" on rules for all using (is_admin()) with check (is_admin());
 create policy "admin write guidelines" on guidelines for all using (is_admin()) with check (is_admin());
 
+-- ------------------------------------------------------------
+-- CUSTOM TYPES (extra calendar types and activity types, with colors)
+-- Built-in types (Event/Due/Project, Assignment/Activity/Project) live in the app code.
+-- ------------------------------------------------------------
+create table if not exists item_types (
+  id uuid primary key default gen_random_uuid(),
+  school_id text not null references schools(id) on delete cascade,
+  kind text not null check (kind in ('event','activity')),
+  type_key text not null,
+  label text not null,
+  color text not null default '#7C5CBF',
+  created_at timestamptz default now(),
+  unique (school_id, kind, type_key)
+);
+alter table item_types enable row level security;
+create policy "public read item_types" on item_types for select using (true);
+create policy "admin write item_types" on item_types for all using (is_admin()) with check (is_admin());
+
+-- ------------------------------------------------------------
+-- SEMESTERS (subjects, events and activities belong to one semester)
+-- ------------------------------------------------------------
+create table if not exists semesters (
+  id uuid primary key default gen_random_uuid(),
+  school_id text not null references schools(id) on delete cascade,
+  name text not null,
+  created_at timestamptz default now()
+);
+alter table semesters enable row level security;
+create policy "public read semesters" on semesters for select using (true);
+create policy "admin write semesters" on semesters for all using (is_admin()) with check (is_admin());
+
+alter table subjects   add column if not exists semester_id uuid references semesters(id) on delete set null;
+alter table events     add column if not exists semester_id uuid references semesters(id) on delete set null;
+alter table activities add column if not exists semester_id uuid references semesters(id) on delete set null;
+
+insert into semesters (school_id, name)
+select s.id, 'Semester 1' from schools s
+where not exists (select 1 from semesters m where m.school_id = s.id);
+
+-- Admins can add new schools from the app (Account -> Add school)
+create policy "admin insert schools" on schools for insert with check (is_admin());
+
 -- Nobody can read the admins table directly from the client (is_admin() reads it internally instead).
 -- No select policy is created for `admins`, so it stays locked down.
 
@@ -238,6 +280,6 @@ create policy "admin write guidelines" on guidelines for all using (is_admin()) 
 -- Done. Next steps:
 -- 1. Enable the Google provider: Authentication → Providers → Google (see README.md)
 -- 2. Copy your Project URL + anon public key: Settings → API
--- 3. Paste them into js/supabase-client.js
+-- 3. Paste them into supabase-client.js
 -- 4. Make sure your real Google email is in the `admins` table above
 -- ============================================================

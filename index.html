@@ -17,50 +17,37 @@
   </div>
   <h1>Gabay Estudyante</h1>
   <p class="sub">One place for your calendar, schedule, subjects, reviewers, and everything else — organized per school.</p>
-  <div class="school-grid">
-    <div class="school-card" onclick="enterApp('pccm')">
-      <img class="logo" src="pccm-logo.png" alt="PCCM logo" onerror="logoFallback(this,'PCCM')">
-      <h3>PCCM</h3>
-      <p>BSOA – BS in Office Administration</p>
-    </div>
-    <div class="school-card" onclick="enterApp('tup')">
-      <img class="logo" src="tup-logo.png" alt="TUP logo" onerror="logoFallback(this,'TUP')">
-      <h3>TUP</h3>
-      <p>BET – Electronics Technology</p>
-    </div>
-  </div>
+  <div class="school-grid" id="schoolGrid"></div>
   <div class="landing-foot">
-    <button class="link-quiet" onclick="openSignInModal()">Admin</button>
+    <button class="link-quiet" id="landingAuthBtn" onclick="openSignInModal()">Sign in</button>
   </div>
 </div>
 
 <!-- ================= APP ================= -->
 <div id="app">
   <div class="topbar">
-    <div class="who" onclick="openSchoolMenu()" role="button" style="cursor:pointer;">
+    <div class="who">
       <div class="dot" id="topSchoolDot">--</div>
-      <div>
-        <h2 id="topSchoolName">School <span style="color:var(--ink-soft);font-weight:400;font-size:12px;">▾</span></h2>
+      <div class="who-text">
+        <h2 id="topSchoolName">School</h2>
+        <div class="top-sem" id="topSemester"></div>
       </div>
     </div>
-  </div>
-
-  <div id="adminBanner">
-    🔧 Admin Mode — you can add, edit, and delete content on this page
-    <button onclick="signOutAdmin()">Exit</button>
+    <div class="top-actions">
+      <button class="sync-dot online" id="syncDot" onclick="showSyncStatus()" aria-label="Online" title="Online"></button>
+      <button id="editBtn" class="off" onclick="toggleEditMode()" aria-label="Turn editing on" title="Editing is off">
+        <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+      </button>
+    </div>
   </div>
 
   <main id="pageContent"></main>
 </div>
 
-<!-- Gear nav -->
-<div id="gearScrim" onclick="closeGear()"></div>
-<div id="gearNav">
-  <div id="gearItems"></div>
-  <button id="gearBtn" onclick="toggleGear()" aria-label="Menu">
-    <svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58a.5.5 0 0 0 .12-.61l-1.92-3.32a.5.5 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.5.5 0 0 0-.59.22L2.68 8.87a.5.5 0 0 0 .12.61l2.03 1.58c-.05.3-.08.62-.08.94s.02.64.07.94l-2.03 1.58a.5.5 0 0 0-.12.61l1.92 3.32c.14.24.42.32.66.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.26.42.5.42h3.84c.24 0 .46-.18.5-.42l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.24.1.51 0 .65-.22l1.92-3.32a.5.5 0 0 0-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z"/></svg>
-  </button>
-</div>
+<div id="toast" role="status"></div>
+
+<!-- Bottom menu (icons only) -->
+<nav id="bottomNav" aria-label="Main menu"></nav>
 
 <!-- Modal -->
 <div class="modal-scrim" id="modalScrim" onclick="if(event.target===this) closeModal()">
@@ -68,7 +55,7 @@
 </div>
 
 <!-- Supabase client library -->
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="vendor-supabase.js"></script>
 <script src="supabase-client.js"></script>
 <script src="data.js"></script>
 <script src="app.js"></script>

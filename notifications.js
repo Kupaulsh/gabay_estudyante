@@ -60,6 +60,7 @@ async function scheduleAllNotifications(){
     // --- Due-date reminders: 8:00 AM the day before due ---
     S().activities.forEach(a=>{
       if(!a.due) return;
+      if(typeof getCompletedSet === 'function' && getCompletedSet().has(a.id)) return; // already done
       const due = new Date(a.due + 'T00:00:00');
       const reminderAt = new Date(due.getTime() - 24*60*60*1000);
       reminderAt.setHours(8,0,0,0);

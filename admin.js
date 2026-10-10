@@ -3,13 +3,55 @@
    No separate admin panel — controls appear inline on each page
    once isAdmin is true.
 ========================================================= */
+/* Three flags:
+   - signedInEmail   : someone is signed in with Google
+   - isSignedInAdmin : that account is on the admin list (can edit)
+   - editMode        : the pencil button is on (green)
+   isAdmin is what the pages look at: true only while editing is switched on. */
 let isAdmin = false;
+let isSignedInAdmin = false;
+let editMode = false;
+let signedInEmail = '';
 let adminEmail = '';
+
+function applyEditState(){
+  isAdmin = !!(isSignedInAdmin && editMode);
+  updateEditButton();
+}
+function updateEditButton(){
+  const b = document.getElementById('editBtn');
+  if(!b) return;
+  b.classList.toggle('on', isAdmin);
+  b.classList.toggle('off', !isAdmin);
+  const msg = isAdmin ? 'Editing is on — tap to stop editing' : 'Editing is off — tap to edit';
+  b.title = msg; b.setAttribute('aria-label', msg);
+}
+function updateAuthUI(){
+  const lb = document.getElementById('landingAuthBtn');
+  if(lb){
+    lb.textContent = signedInEmail ? `Signed in as ${signedInEmail}` : 'Sign in';
+    lb.style.textDecoration = signedInEmail ? 'none' : '';
+    lb.onclick = signedInEmail ? null : openSignInModal;
+  }
+}
+// The pencil: switch editing on and off without signing out
+function toggleEditMode(){
+  if(!isSignedInAdmin){
+    if(signedInEmail) showToast("This account isn't on the admin list.");
+    else openSignInModal();
+    return;
+  }
+  editMode = !editMode;
+  applyEditState();
+  closeModal();
+  if(currentSchool) rerender();
+  showToast(editMode ? 'Editing is on' : 'Editing is off');
+}
 
 function openSignInModal(){
   sessionStorage.setItem('shAdminPending', '1');
   openModal(`<h3>Admin sign-in</h3>
-    <p style="font-size:12.5px;color:var(--ink-soft);">Sign in with the Google account that's on this project's admin list.</p>
+    <p style="font-size:12.5px;color:var(--ink-soft);">Sign in with the Google account that's on this project's admin list. You only need to do this once — the app remembers you. After that, use the pencil button to turn editing on and off.</p>
     <button class="btn" style="display:flex;align-items:center;justify-content:center;gap:10px;width:100%;margin-bottom:10px;" onclick="signInWithGoogle()">
       <svg width="16" height="16" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.4 29.3 35 24 35c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.1 8 3l6-6C34.5 5 29.6 3 24 3 12.4 3 3 12.4 3 24s9.4 21 21 21 21-9.4 21-21c0-1.4-.1-2.5-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 16 19 13 24 13c3.1 0 5.8 1.1 8 3l6-6C34.5 6 29.6 4 24 4c-7.7 0-14.3 4.4-17.7 10.7z"/><path fill="#4CAF50" d="M24 45c5.5 0 10.4-1.9 14.2-5.1l-6.6-5.4C29.6 36 26.9 37 24 37c-5.3 0-9.7-3.5-11.3-8.3l-6.6 5.1C9.6 40.5 16.2 45 24 45z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.3 4.3-4.2 5.6l6.6 5.4C39.9 37.4 43 31.1 43 24c0-1.4-.1-2.5-.4-3.5z"/></svg>
       Sign in with Google
@@ -85,36 +127,73 @@ if(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isN
   });
 }
 async function checkAdminSession(forceStatus){
-  const {data:{session}} = await supabase.auth.getSession();
   const pending = forceStatus || sessionStorage.getItem('shAdminPending');
+  const cached = lsGet('shAdminCache');
+  let session = null;
+  try{ const r = await supabase.auth.getSession(); session = r && r.data ? r.data.session : null; }catch(e){}
+
   if(!session){
+    // Offline with no readable session: keep working as the admin who signed in before
+    if(cached && cached.email && (!navigator.onLine || netDown)){
+      signedInEmail = adminEmail = cached.email; isSignedInAdmin = true;
+      applyEditState(); updateAuthUI();
+      return;
+    }
+    signedInEmail = adminEmail = ''; isSignedInAdmin = false; editMode = false;
+    applyEditState(); updateAuthUI();
     if(pending) setSignInStatus('No active session found after sign-in — please try again.');
     return;
   }
 
-  const {data:isAdminResult, error} = await supabase.rpc('is_admin');
-  if(error){ if(pending) setSignInStatus('Error checking admin status: ' + error.message); return; }
+  signedInEmail = session.user.email;
+  let res;
+  try{ res = await supabase.rpc('is_admin'); }catch(e){ res = {error:{message:String(e)}}; }
 
-  if(isAdminResult){
-    sessionStorage.removeItem('shAdminPending');
-    isAdmin = true;
-    adminEmail = session.user.email;
-    closeModal();
-    if(currentSchool) goPage(currentPage);
-  } else if(pending){
-    setSignInStatus(`Signed in as ${session.user.email}, but this account isn't on the admin list. Add this email to the "admins" table in Supabase, then try again.`);
+  if(res.error){
+    if(isNetworkError(res.error) && cached && cached.email===signedInEmail){
+      adminEmail = cached.email; isSignedInAdmin = true;      // offline: trust the last check
+    } else if(pending){
+      setSignInStatus('Error checking admin status: ' + res.error.message);
+    }
+    applyEditState(); updateAuthUI();
+    return;
+  }
+
+  if(res.data){
+    lsSet('shAdminCache', {email: signedInEmail});
+    isSignedInAdmin = true;
+    adminEmail = signedInEmail;
+    if(pending){ editMode = true; sessionStorage.removeItem('shAdminPending'); closeModal(); }   // just signed in: start editing
+    applyEditState(); updateAuthUI();
+    flushQueue();
+    if(currentSchool) rerender();
+  } else {
+    isSignedInAdmin = false; editMode = false;
+    lsSet('shAdminCache', null);
+    applyEditState(); updateAuthUI();
+    if(pending) setSignInStatus(`Signed in as ${signedInEmail}, but this account isn't on the admin list. Add this email to the "admins" table in Supabase, then try again.`);
+    if(currentSchool) rerender();
   }
 }
 async function signOutAdmin(){
-  await supabase.auth.signOut();
-  isAdmin = false;
-  adminEmail = '';
-  if(currentSchool) goPage(currentPage);
+  if(PENDING.length && !confirm(`${PENDING.length} change(s) haven't synced yet. They stay saved on this device and will sync after you sign in again. Sign out anyway?`)) return;
+  try{ await supabase.auth.signOut(); }catch(e){}
+  isSignedInAdmin = false; editMode = false; signedInEmail = adminEmail = '';
+  lsSet('shAdminCache', null);
+  applyEditState(); updateAuthUI();
+  closeModal();
+  if(currentSchool) rerender();
+  showToast('Signed out');
 }
 
 // Fires on load (existing session) and right after the Google redirect comes back.
 supabase.auth.onAuthStateChange((event, session)=>{
-  if(event === 'SIGNED_IN') checkAdminSession();
+  if(event === 'SIGNED_IN') setTimeout(checkAdminSession, 0);     // (deferred: avoids calling auth inside its own callback)
+  if(event === 'SIGNED_OUT' && signedInEmail){
+    isSignedInAdmin = false; editMode = false; signedInEmail = adminEmail = '';
+    applyEditState(); updateAuthUI();
+    if(currentSchool) rerender();
+  }
 });
 checkAdminSession();
 
@@ -132,7 +211,7 @@ function adminSubjects(D){
       : s.schedule.map(sl=>`${sl.day||'?'} ${sl.time||'TBA'}`).join(' · ');
     html += `<div class="admin-list-item">
       <div class="info">
-        <b>${s.name}</b> <small>${s.code} · ${schedSummary}</small>
+        <b>${esc(s.name)}</b> <small>${esc(s.code)} · ${esc(schedSummary)}</small>
         <small>${s.syllabus.length} syllabus file(s) · ${s.materials.length} material(s)</small>
       </div>
       <div style="display:flex;gap:6px;">
@@ -159,54 +238,65 @@ function adminEditSubject(id){
   const D = DATA[currentSchool];
   const s = D.subjects.find(x=>x.id===id);
   let html = `<h3>Edit subject</h3>
-  <div class="form-grid">
-    <div><label>Name</label><input id="f_name" value="${escAttr(s.name)}"></div>
-    <div class="two-col">
-      <div><label>Code</label><input id="f_code" value="${escAttr(s.code)}"></div>
-      <div><label>Color</label><input id="f_color" type="color" value="${s.color}"></div>
-    </div>
-  </div>
-  <button class="btn" onclick="adminSaveSubject('${id}')">Save details</button>
-  <hr style="margin:20px 0;border:none;border-top:1px solid var(--line);">
 
-  <div class="section-label" style="margin-top:0;">Schedule</div>
-  <p style="color:var(--ink-soft);font-size:12.5px;margin-top:-6px;">Add one entry per class meeting — e.g. a "Mon" one for lecture, a separate "Wed" one for lab.</p>
-  <div id="scheduleList">${adminScheduleList(s.schedule, id)}</div>
-  <div class="form-grid">
-    <div class="two-col">
-      <div><label>Day</label>
-        <select id="sc_day_${id}">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d=>`<option>${d}</option>`).join('')}</select>
+  <div class="modal-section">
+    <div class="modal-section-title">Details</div>
+    <div class="form-grid">
+      <div><label>Name</label><input id="f_name" value="${escAttr(s.name)}"></div>
+      <div class="two-col">
+        <div><label>Code</label><input id="f_code" value="${escAttr(s.code)}"></div>
+        <div><label>Color</label><input id="f_color" type="color" value="${safeColor(s.color)}" style="height:40px;padding:4px;"></div>
       </div>
-      <div><label>Time slot</label><input id="sc_time_${id}" placeholder="8:00–10:00 AM"></div>
     </div>
-    <div class="two-col">
-      <div><label>Professor</label><input id="sc_prof_${id}" placeholder="Professor name"></div>
-      <div><label>Room</label><input id="sc_room_${id}" placeholder="Room number"></div>
-    </div>
-    <button class="btn ghost" onclick="adminAddScheduleSlot('${id}')">+ Add this meeting time</button>
+    <button class="btn" onclick="adminSaveSubject('${id}')">Save details</button>
   </div>
 
-  <div class="section-label">Syllabus files</div>
-  <div id="syllabusList">${adminFileList(s.syllabus,'syllabus_files',id)}</div>
-  ${adminFileAddForm('syllabus_files', id)}
+  <div class="modal-section">
+    <div class="modal-section-title">Schedule</div>
+    <p style="color:var(--ink-soft);font-size:12.5px;margin-top:-4px;">One entry per class meeting — e.g. "Mon" for lecture and a separate "Wed" for lab.</p>
+    <div id="scheduleList">${adminScheduleList(s.schedule, id)}</div>
+    <div class="form-grid">
+      <div class="two-col">
+        <div><label>Day</label>
+          <select id="sc_day_${id}">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d=>`<option>${esc(d)}</option>`).join('')}</select>
+        </div>
+        <div><label>Time slot</label><input id="sc_time_${id}" placeholder="8:00–10:00 AM"></div>
+      </div>
+      <div class="two-col">
+        <div><label>Professor</label><input id="sc_prof_${id}" placeholder="Professor name"></div>
+        <div><label>Room</label><input id="sc_room_${id}" placeholder="Room number"></div>
+      </div>
+      <button class="btn ghost" onclick="adminAddScheduleSlot('${id}')">+ Add this meeting time</button>
+    </div>
+  </div>
 
-  <div class="section-label">Materials (PDF / PPTX / DOCX)</div>
-  <div id="materialsList">${adminFileList(s.materials,'materials',id)}</div>
-  ${adminFileAddForm('materials', id)}
+  <div class="modal-section">
+    <div class="modal-section-title">Syllabus files</div>
+    <div id="syllabusList">${adminFileList(s.syllabus,'syllabus_files',id)}</div>
+    ${adminFileAddForm('syllabus_files', id)}
+  </div>
 
-  <div class="section-label">PDF Books</div>
-  <div id="booksList">${adminBookList(s.books, id)}</div>
-  <div class="form-grid">
-    <input id="bk_label_${id}" placeholder="Book title">
-    <input id="bk_author_${id}" placeholder="Author (optional)">
-    <input id="bk_url_${id}" placeholder="Link (Google Drive URL)">
-    <button class="btn ghost" onclick="adminAddBook('${id}')">+ Add book</button>
+  <div class="modal-section">
+    <div class="modal-section-title">Materials (PDF / PPTX / DOCX)</div>
+    <div id="materialsList">${adminFileList(s.materials,'materials',id)}</div>
+    ${adminFileAddForm('materials', id)}
+  </div>
+
+  <div class="modal-section">
+    <div class="modal-section-title">PDF Books</div>
+    <div id="booksList">${adminBookList(s.books, id)}</div>
+    <div class="form-grid">
+      <input id="bk_label_${id}" placeholder="Book title">
+      <input id="bk_author_${id}" placeholder="Author (optional)">
+      <input id="bk_url_${id}" placeholder="Link (Google Drive URL)">
+      <button class="btn ghost" onclick="adminAddBook('${id}')">+ Add book</button>
+    </div>
   </div>`;
   openModal(html);
 }
 function adminBookList(books, subjId){
   if(!books || books.length===0) return `<p style="font-size:12.5px;color:var(--ink-soft);">None yet.</p>`;
-  return books.map(b=>`<div class="admin-list-item"><div class="info"><b>${b.label}</b><br><small>${b.author?b.author+' — ':''}${b.url}</small></div><button class="btn sm danger" onclick="adminDeleteBook('${subjId}','${b.id}')">Delete</button></div>`).join('');
+  return books.map(b=>`<div class="admin-list-item"><div class="info"><b>${esc(b.label)}</b><br><small>${b.author?esc(b.author)+' — ':''}${esc(b.url)}</small></div><button class="btn sm danger" onclick="adminDeleteBook('${subjId}','${b.id}')">Delete</button></div>`).join('');
 }
 async function adminAddBook(subjId){
   const label = document.getElementById(`bk_label_${subjId}`).value.trim();
@@ -224,7 +314,7 @@ async function adminDeleteBook(subjId, bookId){
 }
 function adminScheduleList(slots, subjId){
   if(slots.length===0) return `<p style="font-size:12.5px;color:var(--ink-soft);">None yet — this subject won't show up on the Schedule page until you add one.</p>`;
-  return slots.map(sl=>`<div class="admin-list-item"><div class="info"><b>${sl.day||'?'} · ${sl.time||'TBA'}</b><br><small>${sl.professor||'Professor TBA'} · Room ${sl.room||'TBA'}</small></div><button class="btn sm danger" onclick="adminDeleteScheduleSlot('${subjId}','${sl.id}')">Delete</button></div>`).join('');
+  return slots.map(sl=>`<div class="admin-list-item"><div class="info"><b>${esc(sl.day||'?')} · ${esc(sl.time||'TBA')}</b><br><small>${esc(sl.professor||'Professor TBA')} · Room ${esc(sl.room||'TBA')}</small></div><button class="btn sm danger" onclick="adminDeleteScheduleSlot('${subjId}','${sl.id}')">Delete</button></div>`).join('');
 }
 async function adminAddScheduleSlot(subjId){
   const day = document.getElementById(`sc_day_${subjId}`).value;
@@ -242,7 +332,7 @@ async function adminDeleteScheduleSlot(subjId, slotId){
 }
 function adminFileList(list, table, subjId){
   if(list.length===0) return `<p style="font-size:12.5px;color:var(--ink-soft);">None yet.</p>`;
-  return list.map((f)=>`<div class="admin-list-item"><div class="info"><b>${f.label}</b><br><small>${f.type||''} — ${f.url}</small></div><button class="btn sm danger" onclick="adminDeleteFile('${table}','${f.id}','${subjId}')">Delete</button></div>`).join('');
+  return list.map((f)=>`<div class="admin-list-item"><div class="info"><b>${esc(f.label)}</b><br><small>${esc(f.type||'')} — ${esc(f.url)}</small></div><button class="btn sm danger" onclick="adminDeleteFile('${table}','${f.id}','${subjId}')">Delete</button></div>`).join('');
 }
 function adminFileAddForm(table, subjId){
   return `<div class="form-grid">
@@ -286,7 +376,7 @@ function adminReviewers(D){
   D.subjects.forEach(s=>{
     html += `<div class="admin-list-item">
       <div class="info">
-        <b>${s.name}</b>
+        <b>${esc(s.name)}</b>
         <small>${s.flashcards.length} flashcard(s) · ${s.quiz.length} quiz question(s)</small>
       </div>
       <button class="btn sm ghost" onclick="adminEditReviewer('${s.id}')">Edit</button>
@@ -297,10 +387,10 @@ function adminReviewers(D){
 function adminEditReviewer(id){
   const D = DATA[currentSchool];
   const s = D.subjects.find(x=>x.id===id);
-  const html = `<h3>Reviewers — ${s.name}</h3>
+  const html = `<h3>Reviewers — ${esc(s.name)}</h3>
 
   <div class="section-label" style="margin-top:0;">Flashcards</div>
-  <div id="flashList">${s.flashcards.map((f)=>`<div class="admin-list-item"><div class="info">${f.image?`<img src="${f.image}" style="width:100%;max-width:160px;border-radius:8px;margin-bottom:6px;display:block;">`:''}<b>Q:</b> ${f.q}<br><small>A: ${f.a}</small></div><button class="btn sm danger" onclick="adminDeleteFlash('${id}','${f.id}')">Delete</button></div>`).join('')}</div>
+  <div id="flashList">${s.flashcards.map((f)=>`<div class="admin-list-item"><div class="info">${f.image?`<img src="${safeUrl(f.image)}" style="width:100%;max-width:160px;border-radius:8px;margin-bottom:6px;display:block;">`:''}<b>Q:</b> ${esc(f.q)}<br><small>A: ${esc(f.a)}</small></div><button class="btn sm danger" onclick="adminDeleteFlash('${id}','${f.id}')">Delete</button></div>`).join('')}</div>
   <div class="form-grid">
     <input id="fc_q" placeholder="Question">
     <input id="fc_a" placeholder="Answer">
@@ -309,7 +399,7 @@ function adminEditReviewer(id){
   </div>
 
   <div class="section-label">Quiz questions</div>
-  <div id="quizList">${s.quiz.map((q)=>`<div class="admin-list-item"><div class="info">${q.image?`<img src="${q.image}" style="width:100%;max-width:160px;border-radius:8px;margin-bottom:6px;display:block;">`:''}<b>${q.q}</b><br><small>Choices: ${q.choices.join(' | ')} — Correct: ${q.choices[q.answer]} — ${q.difficulty}</small></div><button class="btn sm danger" onclick="adminDeleteQuiz('${id}','${q.id}')">Delete</button></div>`).join('')}</div>
+  <div id="quizList">${s.quiz.map((q)=>`<div class="admin-list-item"><div class="info">${q.image?`<img src="${safeUrl(q.image)}" style="width:100%;max-width:160px;border-radius:8px;margin-bottom:6px;display:block;">`:''}<b>${esc(q.q)}</b><br><small>Choices: ${esc(q.choices.join(' | '))} — Correct: ${esc(q.choices[q.answer])} — ${esc(q.difficulty)}</small></div><button class="btn sm danger" onclick="adminDeleteQuiz('${id}','${q.id}')">Delete</button></div>`).join('')}</div>
   <div class="form-grid">
     <input id="qz_q" placeholder="Question">
     <input id="qz_choices" placeholder="Choices, separated by $ (e.g. A $ B $ C $ D)">
@@ -360,15 +450,15 @@ function adminEvents(D){
     <input id="ev_title" placeholder="Title">
     <div class="two-col">
       <input id="ev_date" type="date" value="${todayISO()}">
-      <select id="ev_type"><option value="event">Event</option><option value="due">Due</option><option value="project">Project</option></select>
+      <select id="ev_type">${typeOptionsHtml('activity','Assignment')}</select>
     </div>
-    <select id="ev_subject"><option value="">General (not tied to a subject)</option>${D.subjects.map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}</select>
+    <select id="ev_subject"><option value="">General (not tied to a subject)</option>${D.subjects.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select>
     <textarea id="ev_desc" placeholder="Description" rows="2"></textarea>
     <button class="btn" onclick="adminAddEvent()">+ Add to calendar</button>
   </div><div class="section-label">All events</div>`;
   D.events.slice().sort((a,b)=>a.date.localeCompare(b.date)).forEach(e=>{
     const auto = e.sourceActivityId ? ' <small style="color:var(--ink-soft);">(auto, from an Activity)</small>' : '';
-    html += `<div class="admin-list-item"><div class="info"><b>${e.title}</b>${auto}<br><small>${e.date} · ${e.type}</small></div>
+    html += `<div class="admin-list-item"><div class="info"><b>${esc(e.title)}</b>${auto}<br><small>${esc(e.date)} · ${esc(e.type)}</small></div>
       <div style="display:flex;gap:6px;">
         <button class="btn sm ghost" onclick="adminEditEvent('${e.id}')">Edit</button>
         <button class="btn sm danger" onclick="adminDeleteEvent('${e.id}')">Delete</button>
@@ -394,20 +484,16 @@ function adminEditEvent(id){
   <div class="form-grid">
     <input id="ev_title_edit" value="${escAttr(e.title)}" placeholder="Title">
     <div class="two-col">
-      <input id="ev_date_edit" type="date" value="${e.date}">
-      <select id="ev_type_edit">
-        <option value="event" ${e.type==='event'?'selected':''}>Event</option>
-        <option value="due" ${e.type==='due'?'selected':''}>Due</option>
-        <option value="project" ${e.type==='project'?'selected':''}>Project</option>
-      </select>
+      <input id="ev_date_edit" type="date" value="${esc(e.date)}">
+      <select id="ev_type_edit">${typeOptionsHtml('activity', e.type)}</select>
     </div>
     <select id="ev_subject_edit">
       <option value="">General (not tied to a subject)</option>
-      ${D.subjects.map(s=>`<option value="${s.id}" ${s.id===e.subjectId?'selected':''}>${s.name}</option>`).join('')}
+      ${D.subjects.map(s=>`<option value="${s.id}" ${s.id===e.subjectId?'selected':''}>${esc(s.name)}</option>`).join('')}
     </select>
-    <textarea id="ev_desc_edit" placeholder="Description" rows="2">${e.desc||''}</textarea>
-    <button class="btn" onclick="adminSaveEvent('${id}')">Save</button>
-  </div>`;
+    <textarea id="ev_desc_edit" placeholder="Description" rows="2">${esc(e.desc||'')}</textarea>
+  </div>
+  <div class="modal-actions"><button class="btn" onclick="adminSaveEvent('${id}')">Save changes</button></div>`;
   openModal(html);
 }
 async function adminSaveEvent(id){
@@ -435,7 +521,7 @@ function adminActivities(D){
   <div class="section-label">All activities</div>
   ${D.activities.length ? `<button class="btn ghost sm" onclick="adminResyncAllActivities()" style="margin-bottom:12px;">↻ Sync all to Calendar</button><p style="color:var(--ink-soft);font-size:11.5px;margin-top:-8px;">Use this once if you have older activities from before dates auto-synced.</p>` : ''}`;
   D.activities.forEach(a=>{
-    html += `<div class="admin-list-item"><div class="info"><b>${a.title}</b><br><small>${a.type} · starts ${a.start||'TBA'} · due ${a.due||'TBA'}</small></div>
+    html += `<div class="admin-list-item"><div class="info"><b>${esc(a.title)}</b><br><small>${esc(a.type)} · starts ${esc(a.start||'TBA')} · due ${esc(a.due||'TBA')}</small></div>
       <div style="display:flex;gap:6px;">
         <button class="btn sm ghost" onclick="adminEditActivity('${a.id}')">Edit</button>
         <button class="btn sm danger" onclick="adminDeleteActivity('${a.id}')">Delete</button>
@@ -460,22 +546,22 @@ function adminEditActivity(id){
     <input id="ac_title_edit" value="${escAttr(a.title)}" placeholder="Title">
     <select id="ac_subject_edit">
       <option value="">General (not tied to a subject)</option>
-      ${D.subjects.map(s=>`<option value="${s.id}" ${s.id===a.subjectId?'selected':''}>${s.name}</option>`).join('')}
+      ${D.subjects.map(s=>`<option value="${s.id}" ${s.id===a.subjectId?'selected':''}>${esc(s.name)}</option>`).join('')}
     </select>
-    <select id="ac_type_edit">
-      ${['Assignment','Activity','Project'].map(t=>`<option ${t===a.type?'selected':''}>${t}</option>`).join('')}
-    </select>
-    <div class="two-col">
-      <div><label>Start</label><input id="ac_start_edit" type="date" value="${a.start||''}"></div>
-      <div><label>Due</label><input id="ac_due_edit" type="date" value="${a.due||''}"></div>
+    ${typeFieldHtml('activity','ac_type_edit', a.type)}
+    <div class="two-col dates">
+      <div><label>Start</label><input id="ac_start_edit" type="date" value="${esc(a.start||'')}"></div>
+      <div><label>Due</label><input id="ac_due_edit" type="date" value="${esc(a.due||'')}"></div>
     </div>
-    <textarea id="ac_instr_edit" placeholder="Instructions" rows="3">${a.instructions||''}</textarea>
-    <input id="ac_tags_edit" value="${escAttr((a.tags||[]).join(' $ '))}" placeholder="Tags, separated by $">
+    <textarea id="ac_instr_edit" placeholder="Instructions" rows="3">${esc(a.instructions||'')}</textarea>
+    <div><label>Tags</label>${tagEditorHtml('ac_tags_edit')}</div>
     <input id="ac_img_edit" value="${escAttr(a.image||'')}" placeholder="Image URL (optional — direct image link)">
-    <button class="btn" onclick="adminSaveActivity('${id}')">Save</button>
   </div>
-  <p style="color:var(--ink-soft);font-size:12.5px;">Saving updates the matching Calendar entry too.</p>`;
+  <p class="modal-sub" style="margin-top:0;">Saving updates the matching Calendar entry too.</p>
+  <div class="modal-actions"><button class="btn" onclick="adminSaveActivity('${id}')">Save changes</button></div>`;
+  tagDraft = (a.tags||[]).slice();
   openModal(html);
+  renderTagChips('ac_tags_edit');
 }
 async function adminSaveActivity(id){
   const subjectId = document.getElementById('ac_subject_edit').value || null;
@@ -484,10 +570,10 @@ async function adminSaveActivity(id){
   const start = document.getElementById('ac_start_edit').value;
   const due = document.getElementById('ac_due_edit').value;
   const instructions = document.getElementById('ac_instr_edit').value;
+  const tags = tagValues('ac_tags_edit');
   await dbUpdateActivity(id, {
     title, subject_id: subjectId, type, start_date: start, due_date: due,
-    instructions,
-    tags: document.getElementById('ac_tags_edit').value.split('$').map(t=>t.trim()).filter(Boolean),
+    instructions, tags,
     image_url: document.getElementById('ac_img_edit').value.trim()
   });
   await dbSyncActivityCalendarEvents(currentSchool, id, subjectId, title, type, start, due, instructions);
@@ -518,7 +604,7 @@ function adminFaqs(D){
     <button class="btn" onclick="adminAddFaq()">+ Add FAQ</button>
   </div><div class="section-label">All FAQs</div>`;
   D.faqs.forEach((f)=>{
-    html += `<div class="admin-list-item"><div class="info"><b>${f.q}</b><br><small>${f.a}</small></div>
+    html += `<div class="admin-list-item"><div class="info"><b>${esc(f.q)}</b><br><small>${esc(f.a)}</small></div>
       <div style="display:flex;gap:6px;">
         <button class="btn sm ghost" onclick="adminEditFaq('${f.id}')">Edit</button>
         <button class="btn sm danger" onclick="adminDeleteFaq('${f.id}')">Delete</button>
@@ -540,9 +626,9 @@ function adminEditFaq(id){
   openModal(`<h3>Edit FAQ</h3>
     <div class="form-grid">
       <input id="fq_q_edit" value="${escAttr(f.q)}" placeholder="Question">
-      <textarea id="fq_a_edit" placeholder="Answer" rows="3">${f.a}</textarea>
-      <button class="btn" onclick="adminSaveFaq('${id}')">Save</button>
-    </div>`);
+      <textarea id="fq_a_edit" placeholder="Answer" rows="3">${esc(f.a)}</textarea>
+    </div>
+    <div class="modal-actions"><button class="btn" onclick="adminSaveFaq('${id}')">Save changes</button></div>`);
 }
 async function adminSaveFaq(id){
   const q = document.getElementById('fq_q_edit').value.trim();
@@ -563,9 +649,9 @@ async function adminDeleteFaq(id){
 function adminRules(D){
   const r = D.rules;
   let html = `<div class="form-grid">
-    <div><label>Vision</label><textarea id="r_vision" rows="2">${r.vision}</textarea></div>
-    <div><label>Mission</label><textarea id="r_mission" rows="2">${r.mission}</textarea></div>
-    <div><label>Preamble</label><textarea id="r_preamble" rows="2">${r.preamble}</textarea></div>
+    <div><label>Vision</label><textarea id="r_vision" rows="2">${esc(r.vision)}</textarea></div>
+    <div><label>Mission</label><textarea id="r_mission" rows="2">${esc(r.mission)}</textarea></div>
+    <div><label>Preamble</label><textarea id="r_preamble" rows="2">${esc(r.preamble)}</textarea></div>
     <div><label>Core Values (separated by $)</label><input id="r_values" value="${escAttr(r.coreValues.join(' $ '))}"></div>
     <button class="btn" onclick="adminSaveRules()">Save</button>
   </div>
@@ -575,7 +661,7 @@ function adminRules(D){
     html += `<p style="color:var(--ink-soft);font-size:12.5px;">None yet.</p>`;
   }
   r.guidelines.forEach((g)=>{
-    html += `<div class="admin-list-item"><div class="info"><b>${g.title}</b><br><small>${g.body}</small></div>
+    html += `<div class="admin-list-item"><div class="info"><b>${esc(g.title)}</b><br><small>${esc(g.body)}</small></div>
       <div style="display:flex;gap:6px;">
         <button class="btn sm ghost" onclick="adminEditGuideline('${g.id}')">Edit</button>
         <button class="btn sm danger" onclick="adminDeleteGuideline('${g.id}')">Delete</button>
@@ -612,9 +698,9 @@ function adminEditGuideline(id){
   openModal(`<h3>Edit section</h3>
     <div class="form-grid">
       <input id="g_title_edit" value="${escAttr(g.title)}" placeholder="Section title">
-      <textarea id="g_body_edit" placeholder="Content" rows="4">${g.body}</textarea>
-      <button class="btn" onclick="adminSaveGuideline('${id}')">Save</button>
-    </div>`);
+      <textarea id="g_body_edit" placeholder="Content" rows="4">${esc(g.body)}</textarea>
+    </div>
+    <div class="modal-actions"><button class="btn" onclick="adminSaveGuideline('${id}')">Save changes</button></div>`);
 }
 async function adminSaveGuideline(id){
   const title = document.getElementById('g_title_edit').value.trim();
@@ -635,16 +721,16 @@ async function adminDeleteGuideline(id){
 function openThemeModal(){
   const D = DATA[currentSchool];
   openModal(`
-    <h3>Colors for ${D.fullName}</h3>
+    <h3>Colors for ${esc(D.fullName)}</h3>
     <p style="color:var(--ink-soft);font-size:12.5px;">These apply site-wide whenever someone is viewing this school. Changes save immediately and preview here too.</p>
     <div class="two-col" style="margin-top:16px;max-width:320px;">
       <div>
         <label>Accent color</label>
-        <input id="th_accent" type="color" value="${D.accentColor}" style="height:44px;">
+        <input id="th_accent" type="color" value="${esc(D.accentColor)}" style="height:44px;">
       </div>
       <div>
         <label>Background color</label>
-        <input id="th_bg" type="color" value="${D.bgColor}" style="height:44px;">
+        <input id="th_bg" type="color" value="${esc(D.bgColor)}" style="height:44px;">
       </div>
     </div>
     <button class="btn" style="margin-top:18px;" onclick="adminSaveTheme()">Save colors</button>
@@ -668,4 +754,4 @@ async function adminResetTheme(){
   goPage(currentPage);
 }
 
-function escAttr(s){ return (s||'').replace(/"/g,'&quot;'); }
+function escAttr(s){ return esc(s); }
