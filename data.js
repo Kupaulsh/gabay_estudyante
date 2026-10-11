@@ -132,6 +132,16 @@ async function mutate(table, type, o){
   }
   if(type==='update') op.fields = Object.assign({}, o.fields);
   if(type==='update' || type==='delete') op.match = o.match || [];
+  // Remember what the values were when this edit was made, so a later sync can tell
+  // whether somebody else changed the same thing in the meantime.
+  if(type==='update'){
+    const b = o.base || baseValues(table, op.match, op.fields);
+    if(b) op.base = b;
+  } else if(type==='upsert' && table==='rules'){
+    const f = Object.assign({}, op.row); delete f.school_id;
+    const b = baseValues(table, [['school_id', op.row.school_id]], f);
+    if(b) op.base = b;
+  }
 
   // Older changes still waiting, or we know we are offline: go to the back of the queue so order is kept.
   if(PENDING.length || netDown || !navigator.onLine){
@@ -161,7 +171,23 @@ async function flushQueue(){
   try{
     while(PENDING.length){
       const op = PENDING[0];
-      const {error} = await execOp(op);
+      let run = op, found = [];
+      if(op.base && (op.type==='update' || op.type==='upsert')){
+        const r = await resolveConflicts(op);
+        if(r.error){
+          if(isNetworkError(r.error)){ setNet(false); break; }
+          if(isAuthError(r.error)){
+            if(!authWarned && typeof showToast === 'function'){ authWarned = true; showToast('Sign in again to sync your saved changes.'); }
+            break;
+          }
+          // couldn't check: fall back to sending the edit as it is
+        } else {
+          found = r.conflicts;
+          if(r.skip){ PENDING.shift(); savePending(); recordConflicts(op, r, found); continue; }
+          run = r.op;
+        }
+      }
+      const {error} = await execOp(run);
       if(error && isNetworkError(error)){ setNet(false); break; }
       if(error && isAuthError(error)){
         // Not signed in (or not an admin) right now: keep the changes safe until the next sign-in.
@@ -170,6 +196,7 @@ async function flushQueue(){
       }
       PENDING.shift();
       savePending();
+      if(!error && found.length) recordConflicts(op, {cur: run.__cur}, found);
       if(error){
         console.error('Dropped a change that the server rejected:', op, error);
         if(typeof showToast === 'function') showToast("A change couldn't be saved: " + error.message);
@@ -178,7 +205,88 @@ async function flushQueue(){
     if(!PENDING.length){ authWarned = false; if(netDown) setNet(true); }
   } finally {
     flushing = false; updateSyncDot();
+    announceConflicts();
   }
+}
+
+/* =========================================================
+   EDIT CONFLICTS
+   Two admins changed the same thing while one of them was offline.
+   - Fields only one person changed are merged automatically.
+   - If both changed the same field, the other admin's version is kept (nothing
+     is lost) and your version is saved in a list so you can choose "Use mine".
+========================================================= */
+function cNorm(v){ return v===null || v===undefined ? '' : (typeof v==='object' ? JSON.stringify(v) : String(v)); }
+function cSame(a, b){ return cNorm(a)===cNorm(b); }
+function conflictsList(){ const l = lsGet('shConflicts', []); return Array.isArray(l) ? l : []; }
+
+function findLocalRows(table, match){
+  for(const sid in RAW){
+    const st = RAW[sid];
+    if(!st) continue;
+    if(table==='schools'){ if(st.school && opMatches(st.school, match)) return [st.school]; continue; }
+    const rows = (st[table] || []).filter(r=>opMatches(r, match));
+    if(rows.length) return rows;
+  }
+  return [];
+}
+function baseValues(table, match, fields){
+  if(!match || !match.length) return null;
+  const rows = findLocalRows(table, match);
+  if(rows.length!==1) return null;
+  const b = {};
+  Object.keys(fields).forEach(k=>{ b[k] = rows[0][k]===undefined ? null : rows[0][k]; });
+  return b;
+}
+function conflictLabel(row){
+  return String((row && (row.title || row.name || row.question || row.label || row.full_name)) || '').slice(0, 60);
+}
+// Compare an offline edit with what the server has now
+async function resolveConflicts(op){
+  const isUp = op.type==='upsert';
+  const match = isUp ? [['school_id', op.row.school_id]] : op.match;
+  const mine = isUp ? Object.assign({}, op.row) : op.fields;
+  if(isUp) delete mine.school_id;
+  let res;
+  try{ res = await applyMatch(supabase.from(op.table).select('*'), match).limit(2); }
+  catch(e){ return {error: {message: String((e && e.message) || e)}}; }
+  if(res.error) return {error: res.error};
+  const rows = res.data || [];
+  if(!rows.length){
+    if(isUp) return {op, conflicts: []};               // nothing on the server yet: just send it
+    return {skip:true, deleted:true, conflicts:[{deleted:true}]};
+  }
+  if(rows.length>1) return {op, conflicts: []};
+  const cur = rows[0], merged = {}, conflicts = [];
+  Object.keys(mine).forEach(k=>{
+    const base = op.base[k];
+    if(cSame(cur[k], mine[k])) return;                 // already the same on the server
+    if(cSame(cur[k], base)) merged[k] = mine[k];       // nobody else touched it: apply mine
+    else conflicts.push({field:k, mine:mine[k], theirs:cur[k]});
+  });
+  if(!Object.keys(merged).length) return {skip:true, cur, conflicts};
+  const run = isUp ? Object.assign({}, op, {row: Object.assign({school_id: op.row.school_id}, merged)})
+                   : Object.assign({}, op, {fields: merged});
+  run.__cur = cur;
+  return {op: run, cur, conflicts};
+}
+function recordConflicts(op, r, found){
+  if(!found || !found.length) return;
+  const list = conflictsList();
+  const cur = r && r.cur;
+  const match = op.type==='upsert' ? [['school_id', op.row.school_id]] : op.match;
+  found.forEach(c=>{
+    list.push({id: uid(), t: Date.now(), table: op.table, match, label: conflictLabel(cur),
+      field: c.field, mine: c.mine, theirs: c.theirs, deleted: !!c.deleted});
+  });
+  lsSet('shConflicts', list.slice(-50));
+  conflictsNew += found.length;
+}
+let conflictsNew = 0;
+function announceConflicts(){
+  if(!conflictsNew) return;
+  const n = conflictsNew; conflictsNew = 0;
+  if(typeof onConflictsFound === 'function') onConflictsFound(n);
 }
 
 /* =========================================================

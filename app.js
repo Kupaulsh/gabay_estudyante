@@ -67,7 +67,7 @@ function shade(hex, amt){
 }
 function tagStyle(color){
   const c = safeColor(color);
-  return `background:${c}26;color:${shade(c,-0.4)};`;
+  return `background:${c}26;color:${isDarkTheme() ? shade(c,0.45) : shade(c,-0.4)};`;
 }
 function typeOptionsHtml(kind, selectedKey){
   let html = typeList(kind).map(t=>`<option value="${esc(t.key)}" ${t.key===selectedKey?'selected':''}>${esc(t.label)}</option>`).join('');
@@ -193,7 +193,8 @@ function applyTheme(school){
   const d = DATA[school];
   if(!d) return;
   document.documentElement.style.setProperty('--accent', d.accentColor || '#2F6F5E');
-  document.documentElement.style.setProperty('--bg', d.bgColor || '#F6F5F0');
+  if(isDarkTheme()) document.documentElement.style.removeProperty('--bg');
+  else document.documentElement.style.setProperty('--bg', d.bgColor || '#F6F5F0');
 }
 function resetTheme(){
   document.documentElement.style.removeProperty('--accent');
@@ -368,8 +369,17 @@ function openAccount(){
         <button class="btn ghost sm" onclick="if(confirm('Throw away the changes that have not synced yet?')){discardPending();refreshCurrentSchool().then(()=>{closeModal();rerender();});}">Discard unsynced changes</button></div>`
     : '';
 
+  const nConf = conflictsList().length;
+  const conflictBox = nConf
+    ? `<div class="modal-section"><div class="modal-section-title">Edit conflicts</div>
+        <p class="acct-sync">${nConf} of your offline edit${nConf===1?'':'s'} clashed with another admin’s change.</p>
+        <button class="btn ghost sm" onclick="openConflicts()">Review ${nConf===1?'it':'them'}</button></div>`
+    : '';
+
   openModal(`<h3>Account</h3>
     <div class="modal-section">${who}</div>
+    <div class="modal-section">${displayPrefsHtml()}</div>
+    ${conflictBox}
     <div class="modal-section"><div class="modal-section-title">School</div>
       <div class="pick-list">${schools}</div>${addSchool}</div>
     <div class="modal-section"><div class="modal-section-title">Semester</div>
@@ -377,6 +387,98 @@ function openAccount(){
     ${sync}
     ${email ? `<div class="modal-actions"><button class="btn danger" onclick="signOutAdmin()">Sign out</button></div>` : ''}`);
 }
+/* ---- Display preferences: text size + light/dark mode (icons and numbers only) ---- */
+function displayPrefsHtml(){
+  const dark = isDarkTheme();
+  return `<div class="pref-row">
+    <div class="stepper" role="group" aria-label="Text size">
+      <button onclick="changeFont(-1)" aria-label="Smaller text">−</button>
+      <span id="fsVal">${currentFontSize()}</span>
+      <button onclick="changeFont(1)" aria-label="Larger text">+</button>
+    </div>
+    <div class="mode-toggle" role="group" aria-label="Color mode">
+      <button id="modeLight" class="${dark?'':'on'}" onclick="setTheme('light')" aria-label="Light mode">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.4M12 19.1v2.4M2.5 12h2.4M19.1 12h2.4M5.3 5.3l1.7 1.7M17 17l1.7 1.7M18.7 5.3L17 7M7 17l-1.7 1.7"/></svg></button>
+      <button id="modeDark" class="${dark?'on':''}" onclick="setTheme('dark')" aria-label="Dark mode">
+        <svg viewBox="0 0 24 24"><path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5a8.5 8.5 0 1 0 10.7 10.7z"/></svg></button>
+    </div>
+  </div>`;
+}
+function changeFont(delta){
+  setFontSize(currentFontSize() + delta);
+  const el = document.getElementById('fsVal');
+  if(el) el.textContent = currentFontSize();
+  syncTopbarSpacer();
+}
+function setTheme(mode){
+  applyThemeMode(mode);
+  const l = document.getElementById('modeLight'), d = document.getElementById('modeDark');
+  if(l) l.classList.toggle('on', mode!=='dark');
+  if(d) d.classList.toggle('on', mode==='dark');
+  if(currentSchool) applyTheme(currentSchool);
+  if(currentSchool && S() && !S().offlineEmpty) rerender();
+}
+
+/* ---- Edit conflicts (two admins changed the same thing while one was offline) ---- */
+const CONFLICT_TABLES = {subjects:'Subject', activities:'Activity', events:'Calendar entry', flashcards:'Flashcard',
+  faqs:'FAQ', guidelines:'Guideline', schedule_slots:'Class schedule', rules:'Rules', schools:'School theme',
+  item_types:'Type', semesters:'Semester', syllabus_files:'Syllabus file', materials:'Material', pdf_books:'Book'};
+function fmtConflictVal(v){
+  if(v===null || v===undefined || v==='') return '(empty)';
+  let t = typeof v==='object' ? JSON.stringify(v) : String(v);
+  return t.length>90 ? t.slice(0,90)+'…' : t;
+}
+function openConflicts(){
+  const list = conflictsList();
+  if(!list.length){ closeModal(); return; }
+  const rows = list.map(c=>{
+    const what = (CONFLICT_TABLES[c.table]||c.table) + (c.label ? ` “${esc(c.label)}”` : '');
+    if(c.deleted){
+      return `<div class="conflict-row"><b>${what}</b>
+        <p>Another admin deleted this while you were offline, so your edit wasn’t applied.</p>
+        <div class="row"><button class="btn ghost sm" onclick="conflictDismiss('${c.id}')">OK</button></div></div>`;
+    }
+    return `<div class="conflict-row"><b>${what}</b> · ${esc(String(c.field).replace(/_/g,' '))}
+      <div class="conflict-vals">
+        <div><small>Other admin (kept)</small><span>${esc(fmtConflictVal(c.theirs))}</span></div>
+        <div><small>Yours (not applied)</small><span>${esc(fmtConflictVal(c.mine))}</span></div>
+      </div>
+      <div class="row"><button class="btn sm" onclick="conflictUseMine('${c.id}')">Use mine</button>
+        <button class="btn ghost sm" onclick="conflictDismiss('${c.id}')">Keep theirs</button></div></div>`;
+  }).join('');
+  openModal(`<h3>Edit conflicts</h3>
+    <p class="modal-sub">These edits were made offline, but someone else had already changed the same thing. Their version was kept so nothing was lost. Choose which one you want.</p>
+    ${rows}
+    <div class="modal-actions"><button class="btn ghost" onclick="conflictDismissAll()">Keep all of theirs</button></div>`);
+}
+function conflictDismiss(id){
+  lsSet('shConflicts', conflictsList().filter(c=>c.id!==id));
+  conflictsChanged();
+}
+function conflictDismissAll(){
+  lsSet('shConflicts', []);
+  conflictsChanged();
+}
+async function conflictUseMine(id){
+  const c = conflictsList().find(x=>x.id===id);
+  if(!c) return;
+  const key = {}; key[c.field] = c.mine;
+  const base = {}; base[c.field] = c.theirs;
+  const r = await mutate(c.table, 'update', {fields:key, match:c.match, base});
+  if(r.error){ alert('Could not apply your version: ' + r.error.message); return; }
+  conflictDismiss(id);
+  await refreshCurrentSchool();
+  rerender();
+}
+function conflictsChanged(){
+  if(conflictsList().length) openConflicts();
+  else { closeModal(); showToast('All conflicts reviewed'); }
+}
+// Called by the data layer after a sync that found clashes
+function onConflictsFound(n){
+  showToast(`${n} offline edit${n===1?'':'s'} clashed with another admin’s. Theirs were kept — see Account → Edit conflicts.`, 7000);
+}
+
 function toggleAcctBox(boxId, focusId){
   const box = document.getElementById(boxId);
   const btn = document.getElementById(boxId==='addSchoolBox' ? 'addSchoolBtn' : 'addSemBtn');
@@ -437,7 +539,7 @@ const PAGES = [
     icon:'<path d="M4 4h16v16H4z M4 9h16 M9 4v16" fill="none" stroke="currentColor" stroke-width="1.8"/>'},
   {id:'activities', label:'Activities', title:'Activities', sub:'Assignments, activities, and projects across subjects.',
     icon:'<path d="M9 11l3 3L22 4 M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" fill="none" stroke="currentColor" stroke-width="1.8"/>'},
-  {id:'reviewers', label:'Reviewers', title:'Reviewers', sub:'Flashcards, mock quizzes, and readable PDFs per subject.',
+  {id:'reviewers', label:'Reviewers', title:'Reviewers', sub:'Flashcards, mock quizzes, a Pomodoro timer, and your progress.',
     icon:'<path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" fill="none" stroke="currentColor" stroke-width="1.8"/>'},
   {id:'howto', label:'How-To', title:'How-To', sub:'Frequently asked questions.',
     icon:'<circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 1.5-2 1.7-2 3.3M12 17h.01" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>'},
@@ -639,7 +741,7 @@ function renderCalendar(){
     <div class="hub-list cal-upcoming-scroll">`;
   const groups = getUpcomingDue(8);
   if(groups.length===0){
-    html += `<p style="color:var(--ink-soft);font-size:13px;">Nothing due soon.</p>`;
+    html += `<p style="color:var(--ink-soft);font-size:calc(13px * var(--fs));">Nothing due soon.</p>`;
   } else {
     groups.forEach(g=>{
       html += `<div class="section-label" style="margin-top:14px;">${daysFromToday(g.date)} · ${esc(g.date)}</div>`;
@@ -694,7 +796,7 @@ function openDay(iso){
         </div>
       </div>
       <h4>${esc(e.title)}</h4>
-      ${subj?`<p style="font-size:12px;">${esc(subj.name)}</p>`:''}
+      ${subj?`<p style="font-size:calc(12px * var(--fs));">${esc(subj.name)}</p>`:''}
       <p>${nl2br(e.desc)}</p>
     </div>`;
   });
@@ -819,20 +921,20 @@ function openSubject(id){
   const s = S().subjects.find(x=>x.id===id);
   let html = `<h3>${esc(s.name)}</h3>`;
   if(s.schedule.length===0){
-    html += `<p style="color:var(--ink-soft);font-size:13px;">No schedule set yet.</p>`;
+    html += `<p style="color:var(--ink-soft);font-size:calc(13px * var(--fs));">No schedule set yet.</p>`;
   } else {
     s.schedule.forEach(sl=>{
-      html += `<p style="color:var(--ink-soft);font-size:13px;margin:0 0 4px;">${esc(sl.day||'')} · ${esc(sl.time||'TBA')} · ${esc(sl.professor||'Professor TBA')} · Room ${esc(sl.room||'TBA')}</p>`;
+      html += `<p style="color:var(--ink-soft);font-size:calc(13px * var(--fs));margin:0 0 4px;">${esc(sl.day||'')} · ${esc(sl.time||'TBA')} · ${esc(sl.professor||'Professor TBA')} · Room ${esc(sl.room||'TBA')}</p>`;
     });
   }
   html += `<div class="section-label">Syllabus</div>`;
-  if(s.syllabus.length===0) html += `<p style="font-size:13px;color:var(--ink-soft);">No syllabus uploaded yet.</p>`;
+  if(s.syllabus.length===0) html += `<p style="font-size:calc(13px * var(--fs));color:var(--ink-soft);">No syllabus uploaded yet.</p>`;
   s.syllabus.forEach(f=> html += fileRow(f));
   html += `<div class="section-label">Materials</div>`;
-  if(s.materials.length===0) html += `<p style="font-size:13px;color:var(--ink-soft);">No materials uploaded yet.</p>`;
+  if(s.materials.length===0) html += `<p style="font-size:calc(13px * var(--fs));color:var(--ink-soft);">No materials uploaded yet.</p>`;
   s.materials.forEach(f=> html += fileRow(f));
   html += `<div class="section-label">PDF Books</div>`;
-  if(!s.books || s.books.length===0) html += `<p style="font-size:13px;color:var(--ink-soft);">No books added yet.</p>`;
+  if(!s.books || s.books.length===0) html += `<p style="font-size:calc(13px * var(--fs));color:var(--ink-soft);">No books added yet.</p>`;
   (s.books||[]).forEach(b=> html += fileRow({label: b.label + (b.author?` — ${b.author}`:''), type:'BOOK', url:b.url}));
   openModal(html, s.color);
 }
@@ -905,7 +1007,7 @@ function activityCard(a, isDone){
   const tags = (a.tags||[]).map((t,i)=>`<span class="tag">#${esc(t)}${isAdmin?`<button type="button" class="chip-x" onclick="event.stopPropagation();adminRemoveActivityTag('${a.id}',${i})" aria-label="Remove tag">×</button>`:''}</span>`).join('');
   const instr = (a.instructions||'').trim();
   return `<div class="act-card ${isDone?'is-done':''}" style="--subj:${color};" onclick="openActivity('${a.id}')">
-    ${a.image?`<img class="act-img" src="${safeUrl(a.image)}" alt="">`:''}
+    ${a.image?`<img class="act-img" loading="lazy" decoding="async" src="${safeUrl(a.image)}" alt="">`:''}
     <div class="act-card-head">
       <div class="act-title">
         <span class="act-type" style="${tagStyle(info.color)}">${esc(info.label)}</span>
@@ -1092,7 +1194,7 @@ function renderActivities(){
   html += `<button class="btn ghost sm" style="margin-top:20px;" onclick="toggleShowCompleted()">${showCompleted?'▾':'▸'} Completed School Works (${doneActs.length})</button>`;
   if(showCompleted){
     html += `<div style="margin-top:10px;">`;
-    if(doneActs.length===0) html += `<p style="color:var(--ink-soft);font-size:13px;">Nothing completed yet.</p>`;
+    if(doneActs.length===0) html += `<p style="color:var(--ink-soft);font-size:calc(13px * var(--fs));">Nothing completed yet.</p>`;
     if(doneActs.length) html += `<div class="sched-list">${doneActs.map(a=>activityCard(a,true)).join('')}</div>`;
     html += `</div>`;
   }
@@ -1103,7 +1205,7 @@ function openActivity(id){
   const subj = S().subjects.find(s=>s.id===a.subjectId);
   const info = typeInfo('activity', a.type);
   openModal(`<h3>${esc(a.title)}</h3>
-    <p style="color:var(--ink-soft);font-size:13px;">${esc(subj?subj.name:'General')} · <span class="tag" style="${tagStyle(info.color)}margin:0;">${esc(info.label)}</span></p>
+    <p style="color:var(--ink-soft);font-size:calc(13px * var(--fs));">${esc(subj?subj.name:'General')} · <span class="tag" style="${tagStyle(info.color)}margin:0;">${esc(info.label)}</span></p>
     <p><b>Starts:</b> ${esc(a.start||'TBA')} &nbsp; <b>Due:</b> ${esc(a.due||'TBA')}</p>
     ${a.image?`<img src="${safeUrl(a.image)}" style="max-width:100%;max-height:220px;object-fit:contain;border-radius:12px;margin:10px 0;display:block;">`:''}
     <p>${nl2br(a.instructions)}</p>
@@ -1112,14 +1214,21 @@ function openActivity(id){
 
 /* =========================================================
    REVIEWERS
+   - Flashcards: tap to flip, then ✓ (got it) or ✕ (missed it). When the
+     deck is finished a results box shows and the round is saved to History.
+   - Mock Quiz: built from the flashcards. Every flashcard question becomes a
+     question; its answer plus other flashcards' answers become the choices.
+   - Pomodoro Timer and History progress live in study.js.
 ========================================================= */
-let revMode = 'flashcards';
-let revView = 'list'; // 'list' | 'detail'  (flashcards only)
+let revMode = 'flashcards';   // 'flashcards' | 'quiz' | 'pomodoro' | 'history'
+let revView = 'list';         // 'list' | 'detail'  (flashcards only)
 let revSubjectId = null;
-let flashIdx = 0, flashFlipped = false;
+
+// Flashcard round
+let fc = null;                // {subjectId, ids, pos, flipped, right, wrong, missed, practice}
 
 // Mock quiz state
-let quizStage = 'list'; // 'list' | 'setup' | 'active' | 'results'
+let quizStage = 'list';       // 'list' | 'setup' | 'active' | 'results'
 let quizTimed = false;
 let quizMinutes = 10;
 let quizQuestions = [];
@@ -1128,8 +1237,14 @@ let quizAnswers = [];
 let quizTimerId = null;
 let quizSecondsLeft = 0;
 
+function shuffle(a){
+  a = a.slice();
+  for(let i=a.length-1;i>0;i--){ const j = Math.floor(Math.random()*(i+1)); [a[i],a[j]] = [a[j],a[i]]; }
+  return a;
+}
+
 function revSetMode(m){
-  revMode = m; revView = 'list'; quizStage = 'list';
+  revMode = m; revView = 'list'; quizStage = 'list'; fc = null;
   stopQuizTimer();
   renderReviewers();
 }
@@ -1138,91 +1253,42 @@ function revOpenSubject(id){
   if(revMode==='quiz'){
     quizStage = 'setup'; quizTimed = false; quizMinutes = 10;
   } else {
-    revView = 'detail'; flashIdx = 0; flashFlipped = false;
+    startFlash(id);
   }
   renderReviewers();
 }
 function revBack(){
   if(revMode==='quiz'){ stopQuizTimer(); quizStage = 'list'; }
-  else { revView = 'list'; }
-  renderReviewers();
-}
-
-function openReviewerAdd(){
-  if(S().subjects.length===0){ alert('Add a subject first (Schedule page).'); return; }
-  if(revMode==='flashcards'){
-    openFlashcardModal(revView==='detail' ? revSubjectId : null);
-    return;
-  }
-  const subjOpts = S().subjects.map(s=>`<option value="${s.id}" ${s.id===revSubjectId?'selected':''}>${esc(s.name)}</option>`).join('');
-  let fields = '';
-  if(revMode==='quiz'){
-    fields = `<input id="qa_qz_q" placeholder="Question">
-      <input id="qa_qz_choices" placeholder="Choices, separated by $ (e.g. A $ B $ C $ D)">
-      <input id="qa_qz_answer" placeholder="Correct answer (must match one choice exactly)">
-      <select id="qa_qz_diff"><option>Easy</option><option>Average</option><option>Hard</option><option>Very Hard</option></select>
-      <input id="qa_qz_img" placeholder="Image URL (optional)">`;
-  } else if(revMode==='pdf'){
-    fields = `<input id="qa_mat_label" placeholder="Label (e.g. Week 1 Notes)">
-      <input id="qa_mat_type" value="PDF" placeholder="Type">
-      <input id="qa_mat_url" placeholder="Link (Google Drive URL)">`;
-  } else if(revMode==='books'){
-    fields = `<input id="qa_bk_label" placeholder="Book title">
-      <input id="qa_bk_author" placeholder="Author (optional)">
-      <input id="qa_bk_url" placeholder="Link (Google Drive URL)">`;
-  }
-  const what = revMode==='quiz'?'quiz question':revMode==='pdf'?'PDF material':'book';
-  openModal(`<h3>Add ${what}</h3>
-    <div class="form-grid">
-      <select id="qa_rev_subject">${subjOpts}</select>
-      ${fields}
-    </div>
-    <div class="modal-actions"><button class="btn" onclick="quickAddReviewerItem()">Add ${what}</button></div>`);
-}
-async function quickAddReviewerItem(){
-  const subjId = document.getElementById('qa_rev_subject').value;
-  if(revMode==='quiz'){
-    const q = document.getElementById('qa_qz_q').value.trim();
-    const choices = document.getElementById('qa_qz_choices').value.split('$').map(c=>c.trim()).filter(Boolean);
-    const answerIdx = choices.indexOf(document.getElementById('qa_qz_answer').value.trim());
-    if(!q||choices.length<2||answerIdx===-1){ alert('Fill all fields; correct answer must exactly match one choice.'); return; }
-    await dbAddQuiz(subjId, q, choices, answerIdx, document.getElementById('qa_qz_diff').value, document.getElementById('qa_qz_img').value.trim());
-  } else if(revMode==='pdf'){
-    const label = document.getElementById('qa_mat_label').value.trim();
-    const url = document.getElementById('qa_mat_url').value.trim();
-    if(!label||!url){alert('Label and link are required.');return;}
-    await dbAddFile('materials', subjId, label, document.getElementById('qa_mat_type').value.trim(), url);
-  } else if(revMode==='books'){
-    const label = document.getElementById('qa_bk_label').value.trim();
-    const url = document.getElementById('qa_bk_url').value.trim();
-    if(!label||!url){alert('Title and link are required.');return;}
-    await dbAddBook(subjId, label, document.getElementById('qa_bk_author').value.trim(), url);
-  }
-  await refreshCurrentSchool();
-  closeModal();
+  else { revView = 'list'; fc = null; }
   renderReviewers();
 }
 
 /* ---- Flashcards: Add card / Edit card ---- */
+function openReviewerAdd(){
+  const inSubject = (revMode==='flashcards' && revView==='detail') || (revMode==='quiz' && quizStage!=='list');
+  openFlashcardModal(inSubject ? revSubjectId : null);
+}
 function openFlashcardModal(subjectId, cardId, notice){
   if(S().subjects.length===0){ alert('Add a subject first (Schedule page).'); return; }
+  const isQ = revMode==='quiz';
   const subj = subjectId ? S().subjects.find(x=>x.id===subjectId) : null;
   const card = (subj && cardId) ? subj.flashcards.find(c=>c.id===cardId) : null;
   const subjectField = subj
     ? `<div><span class="modal-subject" style="--subj:${safeColor(subj.color)};">${esc(subj.name)}</span><input type="hidden" id="fc_subject" value="${esc(subj.id)}"></div>`
     : `<div><label>Subject</label><select id="fc_subject">${S().subjects.map(x=>`<option value="${x.id}" ${x.id===revSubjectId?'selected':''}>${esc(x.name)}</option>`).join('')}</select></div>`;
-  openModal(`<h3>${card?'Edit card':'Add card'}</h3>
+  openModal(`<h3>${card ? (isQ?'Edit question':'Edit card') : (isQ?'Add question':'Add card')}</h3>
     ${notice?`<div class="modal-notice">${esc(notice)}</div>`:''}
+    ${isQ && !card ? `<p class="modal-sub" style="margin:0 0 10px;">Quiz questions come from flashcards. Write the question and its correct answer — the other choices are picked from your other answers.</p>`:''}
     <div class="form-grid">
       ${subjectField}
-      <div><label>Question</label><textarea id="fc_q" rows="3" placeholder="Front of the card">${esc(card?card.q:'')}</textarea></div>
-      <div><label>Answer</label><textarea id="fc_a" rows="3" placeholder="Back of the card">${esc(card?card.a:'')}</textarea></div>
+      <div><label>${isQ?'Question':'Question (front)'}</label><textarea id="fc_q" rows="3" placeholder="${isQ?'The question':'Front of the card'}">${esc(card?card.q:'')}</textarea></div>
+      <div><label>${isQ?'Correct answer':'Answer (back)'}</label><textarea id="fc_a" rows="3" placeholder="${isQ?'The correct answer':'Back of the card'}">${esc(card?card.a:'')}</textarea></div>
       <div><label>Image URL (optional)</label><input id="fc_img" value="${esc(card?card.image:'')}" placeholder="Direct image link"></div>
     </div>
     <div class="modal-actions">
       ${card
         ? `<button class="btn" onclick="saveFlashcard('${card.id}')">Save changes</button>`
-        : `<button class="btn" onclick="saveFlashcard(null,false)">Add card</button>
+        : `<button class="btn" onclick="saveFlashcard(null,false)">${isQ?'Add question':'Add card'}</button>
            <button class="btn ghost" onclick="saveFlashcard(null,true)">Add &amp; next</button>`}
     </div>`);
   setTimeout(()=>{ const q = document.getElementById('fc_q'); if(q) q.focus(); }, 60);
@@ -1238,7 +1304,7 @@ async function saveFlashcard(cardId, addAnother){
   await refreshCurrentSchool();
   if(addAnother){
     rerender();
-    openFlashcardModal(subjId, null, 'Card added. Add another, or close when you’re done.');
+    openFlashcardModal(subjId, null, (revMode==='quiz'?'Question':'Card')+' added. Add another, or close when you’re done.');
   } else {
     closeModal();
     rerender();
@@ -1248,74 +1314,122 @@ async function deleteFlashcard(id){
   if(!confirm('Delete this flashcard?')) return;
   await dbDeleteFlashcard(id);
   await refreshCurrentSchool();
-  flashFlipped = false;
+  if(fc) fc.flipped = false;
   renderReviewers();
 }
 
+/* ---- Flashcard round ---- */
+function startFlash(subjectId, onlyIds){
+  const s = S().subjects.find(x=>x.id===subjectId);
+  if(!s) return;
+  const pool = onlyIds ? s.flashcards.filter(c=>onlyIds.includes(c.id)) : s.flashcards;
+  fc = {subjectId, ids: shuffle(pool.map(c=>c.id)), pos:0, flipped:false, right:0, wrong:0, missed:[], practice: !!onlyIds, saved:false};
+  revView = 'detail';
+}
+function flashFlip(){ if(fc){ fc.flipped = !fc.flipped; renderReviewers(); } }
+function flashJudge(ok){
+  if(!fc || !fc.flipped) return;
+  const id = fc.ids[fc.pos];
+  if(ok) fc.right++; else { fc.wrong++; fc.missed.push(id); }
+  fc.pos++; fc.flipped = false;
+  if(fc.pos>=fc.ids.length) finishFlash();
+  renderReviewers();
+}
+function finishFlash(){
+  if(!fc || fc.saved) return;
+  fc.saved = true;
+  if(!fc.practice && (fc.right+fc.wrong)>0){
+    const s = S().subjects.find(x=>x.id===fc.subjectId);
+    histAdd({kind:'flash', subjectId:fc.subjectId, subject:s?s.name:'', correct:fc.right, wrong:fc.wrong, total:fc.right+fc.wrong});
+  }
+}
+
+function resultBox(title, right, wrong, note){
+  const total = right+wrong, pct = total ? Math.round(right/total*100) : 0;
+  return `<div class="result-box">
+    <div class="result-ring" style="--p:${pct}"><span>${pct}%</span></div>
+    <h3>${esc(title)}</h3>
+    <div class="result-stats">
+      <div class="rs good"><b>${right}</b><span>Correct</span></div>
+      <div class="rs bad"><b>${wrong}</b><span>Wrong</span></div>
+    </div>
+    ${note ? `<p class="result-note">${esc(note)}</p>` : ''}
+  </div>`;
+}
+
+function renderFlashRound(s){
+  let html = `<button class="btn ghost sm" onclick="revBack()" style="margin-bottom:16px;">‹ Back to subjects</button>
+    <div class="section-label" style="margin-top:0;">${esc(s.name)}</div>`;
+  if(!fc || s.flashcards.length===0){
+    return html + `<p style="color:var(--ink-soft);">No flashcards yet for this subject.</p>`;
+  }
+  // skip cards that were deleted in the middle of a round
+  while(fc.pos<fc.ids.length && !s.flashcards.some(c=>c.id===fc.ids[fc.pos])) fc.pos++;
+  if(fc.pos>=fc.ids.length){
+    finishFlash();
+    const total = fc.right+fc.wrong;
+    html += resultBox(fc.practice ? 'Practice finished' : 'Round complete', fc.right, fc.wrong,
+      total===0 ? 'Nothing to review.' : (fc.practice ? 'Practice rounds are not added to your history.' : 'Saved to your history progress.'));
+    html += `<div class="result-actions">
+      <button class="btn" onclick="startFlash('${s.id}');renderReviewers()">Study again</button>
+      ${fc.missed.length ? `<button class="btn ghost" onclick="startFlash('${s.id}', fc.missed.slice());renderReviewers()">Practice missed (${fc.missed.length})</button>` : ''}
+      <button class="btn ghost" onclick="revBack()">Back to subjects</button>
+    </div>`;
+    return html;
+  }
+  const c = s.flashcards.find(x=>x.id===fc.ids[fc.pos]);
+  const total = fc.ids.length;
+  const imgHtml = (c.image && !fc.flipped) ? `<img loading="lazy" decoding="async" src="${safeUrl(c.image)}" alt="" style="max-width:100%;max-height:180px;border-radius:12px;margin-bottom:14px;object-fit:contain;">` : '';
+  html += `<div class="flash-progress"><span>${fc.pos+1} / ${total}</span><div class="bar"><i style="width:${Math.round(fc.pos/total*100)}%"></i></div></div>
+    <div class="flash-card ${fc.flipped?'is-flipped':''}" onclick="flashFlip()">
+      <div style="display:flex;flex-direction:column;align-items:center;">${imgHtml}<div>${esc(fc.flipped ? c.a : c.q)}</div></div>
+    </div>`;
+  if(!fc.flipped){
+    html += `<p class="flash-hint">Tap the card to see the answer</p>`;
+  } else {
+    html += `<div class="flash-judge">
+      <button class="judge wrong" onclick="flashJudge(false)" aria-label="I missed it"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+      <button class="judge right" onclick="flashJudge(true)" aria-label="I got it"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></button>
+    </div>`;
+  }
+  if(isAdmin){
+    html += `<div class="flash-admin">
+      <button class="btn ghost sm" onclick="openFlashcardModal('${s.id}','${c.id}')">Edit card</button>
+      <button class="btn danger sm" onclick="deleteFlashcard('${c.id}')">Delete card</button>
+    </div>`;
+  }
+  return html;
+}
+
 function renderReviewers(){
-  const addLabel = {flashcards:'+ Add card', quiz:'+ Add question', pdf:'+ Add PDF', books:'+ Add book'}[revMode];
+  const study = revMode==='flashcards' || revMode==='quiz';
+  const addLabel = revMode==='quiz' ? '+ Add question' : '+ Add card';
+  const icoTimer = `<svg viewBox="0 0 24 24"><circle cx="12" cy="13.5" r="7.5"/><path d="M12 9.5v4l2.5 1.5M9.5 2.5h5M12 2.5v3.5"/></svg>`;
+  const icoProg = `<svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>`;
   let html = `<div class="rev-tabs">
     <button class="rev-tab ${revMode==='flashcards'?'active':''}" onclick="revSetMode('flashcards')">Flashcards</button>
+    ${(isAdmin && study) ? `<button class="rev-add" onclick="openReviewerAdd()">${addLabel}</button>` : ''}
     <button class="rev-tab ${revMode==='quiz'?'active':''}" onclick="revSetMode('quiz')">Mock Quiz</button>
-    <button class="rev-tab ${revMode==='pdf'?'active':''}" onclick="revSetMode('pdf')">Readable PDF</button>
-    <button class="rev-tab ${revMode==='books'?'active':''}" onclick="revSetMode('books')">PDF Books</button>
   </div>
-  ${isAdmin?`<div class="rev-admin-row"><button class="btn-tag" onclick="openReviewerAdd()">${addLabel}</button></div>`:''}`;
+  <div class="rev-tools">
+    <button class="rev-tool ${revMode==='pomodoro'?'active':''}" onclick="revSetMode('pomodoro')">${icoTimer}<span>Pomodoro Timer</span></button>
+    <button class="rev-tool ${revMode==='history'?'active':''}" onclick="revSetMode('history')">${icoProg}<span>History progress</span></button>
+  </div>`;
+
+  if(revMode==='pomodoro'){ setPageContent(html + pomodoroHtml()); return; }
+  if(revMode==='history'){ setPageContent(html + historyHtml()); return; }
 
   if(S().subjects.length===0){
     setPageContent(html + `<p style="color:var(--ink-soft);">No subjects yet.</p>`);
     return;
   }
 
-  if(revMode==='pdf'){
-    const rows = [];
-    S().subjects.forEach(s=>{
-      s.materials.filter(m=>(m.type||'').toLowerCase()==='pdf').forEach(f=> rows.push(fileRow(f, s.name)));
-    });
-    html += `<div class="section-label">Readable PDFs</div>`;
-    html += rows.length ? `<div class="hub-list">${rows.join('')}</div>`
-      : `<p style="color:var(--ink-soft);">No PDF materials linked yet — add them via Admin → Subjects → Materials (type: PDF).</p>`;
-    setPageContent(html);
-    return;
-  }
-
-  if(revMode==='books'){
-    const rows = [];
-    S().subjects.forEach(s=>{
-      (s.books||[]).forEach(b=> rows.push(fileRow({label:b.label + (b.author?` — ${b.author}`:''), type:'BOOK', url:b.url}, s.name)));
-    });
-    html += `<div class="section-label">PDF Books</div>`;
-    html += rows.length ? `<div class="hub-list">${rows.join('')}</div>`
-      : `<p style="color:var(--ink-soft);">No books added yet — add them via Admin → Subjects → PDF Books.</p>`;
-    setPageContent(html);
-    return;
-  }
-
   if(revMode==='flashcards'){
-    if(revView==='list'){
+    if(revView==='list' || !fc){
       html += renderRevSubjectList('flashcards');
-      setPageContent(html);
-      return;
-    }
-    const s = S().subjects.find(x=>x.id===revSubjectId);
-    html += `<button class="btn ghost sm" onclick="revBack()" style="margin-bottom:16px;">‹ Back to subjects</button>`;
-    html += `<div class="section-label" style="margin-top:0;">${esc(s.name)}</div>`;
-    if(s.flashcards.length===0){ html += `<p style="color:var(--ink-soft);">No flashcards yet for this subject.</p>`; }
-    else{
-      const c = s.flashcards[flashIdx % s.flashcards.length];
-      const imgHtml = (c.image && !flashFlipped) ? `<img src="${safeUrl(c.image)}" style="max-width:100%;max-height:180px;border-radius:12px;margin-bottom:14px;object-fit:contain;">` : '';
-      html += `<div class="flash-card ${flashFlipped?'is-flipped':''}" onclick="flashFlipped=!flashFlipped;renderReviewers()">
-        <div style="display:flex;flex-direction:column;align-items:center;">${imgHtml}<div>${esc(flashFlipped ? c.a : c.q)}</div></div>
-      </div>
-      ${isAdmin?`<div class="flash-admin">
-        <button class="btn ghost sm" onclick="openFlashcardModal('${s.id}','${c.id}')">Edit card</button>
-        <button class="btn danger sm" onclick="deleteFlashcard('${c.id}')">Delete card</button>
-      </div>`:''}
-      <div class="flash-nav">
-        <button class="btn ghost" onclick="flashIdx=(flashIdx-1+${s.flashcards.length})%${s.flashcards.length};flashFlipped=false;renderReviewers()">‹ Prev</button>
-        <span style="font-size:12.5px;color:var(--ink-soft);">${flashIdx%s.flashcards.length+1} / ${s.flashcards.length} · tap card to flip</span>
-        <button class="btn ghost" onclick="flashIdx=(flashIdx+1)%${s.flashcards.length};flashFlipped=false;renderReviewers()">Next ›</button>
-      </div>`;
+    } else {
+      const s = S().subjects.find(x=>x.id===revSubjectId);
+      html += s ? renderFlashRound(s) : renderRevSubjectList('flashcards');
     }
     setPageContent(html);
     return;
@@ -1328,6 +1442,7 @@ function renderReviewers(){
     return;
   }
   const s = S().subjects.find(x=>x.id===revSubjectId);
+  if(!s){ quizStage = 'list'; html += renderRevSubjectList('quiz'); setPageContent(html); return; }
   if(quizStage==='setup') html += renderQuizSetup(s);
   else if(quizStage==='active') html += renderQuizActive(s);
   else if(quizStage==='results') html += renderQuizResults(s);
@@ -1338,13 +1453,17 @@ function renderRevSubjectList(mode){
   let html = `<div class="section-label">${mode==='flashcards'?'Choose a subject to review':'Choose a subject to test yourself'}</div>
   <div class="hub-list">`;
   S().subjects.forEach(s=>{
-    const count = mode==='flashcards' ? s.flashcards.length : s.quiz.length;
-    const noun = mode==='flashcards' ? (count===1?'flashcard':'flashcards') : (count===1?'question':'questions');
+    const count = s.flashcards.length;
+    const last = histLast(s.id, mode==='flashcards' ? 'flash' : 'quiz');
+    let line;
+    if(mode==='flashcards') line = `${count} ${count===1?'flashcard':'flashcards'}`;
+    else line = count>=2 ? `${count} questions` : 'Needs at least 2 flashcards';
+    if(last!==null) line += ` · last ${last}%`;
     html += `<div class="hub-row" onclick="revOpenSubject('${s.id}')">
       <div class="chip" style="background:${esc(s.color)}">${esc(s.code.slice(0,4))}</div>
       <div class="hub-text">
         <h4>${esc(s.name)}</h4>
-        <p>${count} ${noun}</p>
+        <p>${line}</p>
       </div>
       <span class="hub-arrow">›</span>
     </div>`;
@@ -1353,14 +1472,42 @@ function renderRevSubjectList(mode){
   return html;
 }
 
+/* ---- Quiz questions come from the flashcards ---- */
+function buildQuiz(s){
+  const norm = x=>String(x||'').trim().toLowerCase();
+  const own = s.flashcards.filter(c=>c.q && c.a);
+  const others = [];
+  S().subjects.forEach(o=>{ if(o.id!==s.id) o.flashcards.forEach(c=>{ if(c.a) others.push(c.a); }); });
+  const out = [];
+  own.forEach(c=>{
+    const seen = new Set([norm(c.a)]);
+    const wrong = [];
+    const take = list=>{
+      for(const a of shuffle(list)){
+        if(wrong.length>=3) break;
+        const k = norm(a);
+        if(!k || seen.has(k)) continue;
+        seen.add(k); wrong.push(a);
+      }
+    };
+    take(own.filter(o=>o.id!==c.id).map(o=>o.a));   // other answers from this subject first
+    if(wrong.length<3) take(others);                 // then answers from other subjects
+    if(!wrong.length) return;                        // nothing to choose between
+    const choices = shuffle([c.a].concat(wrong));
+    out.push({id:c.id, q:c.q, choices, answer:choices.indexOf(c.a), image:c.image});
+  });
+  return shuffle(out);
+}
+
 /* ---- Quiz setup (timer choice) ---- */
 function renderQuizSetup(s){
+  const n = buildQuiz(s).length;
   return `
     <button class="btn ghost sm" onclick="revBack()" style="margin-bottom:16px;">‹ Back to subjects</button>
     <div class="card">
       <h3>${esc(s.name)} — Mock Quiz</h3>
-      <p style="color:var(--ink-soft);font-size:13px;">${s.quiz.length} question${s.quiz.length!==1?'s':''} available.</p>
-      ${s.quiz.length===0 ? `<p style="color:var(--ink-soft);margin-top:12px;">No quiz questions yet for this subject — add some via Admin.</p>` : `
+      <p style="color:var(--ink-soft);font-size:calc(13px * var(--fs));">${n} question${n!==1?'s':''} made from this subject’s flashcards, with the choices mixed up every time.</p>
+      ${n===0 ? `<p style="color:var(--ink-soft);margin-top:12px;">Add at least 2 flashcards with different answers to unlock the mock quiz.</p>` : `
       <div class="section-label" style="margin-top:18px;">Timer</div>
       <div class="quiz-setup-options">
         <button class="quiz-setup-opt ${!quizTimed?'active':''}" onclick="quizTimed=false;renderReviewers()">No Timer</button>
@@ -1378,7 +1525,8 @@ function renderQuizSetup(s){
 
 function startQuiz(subjectId){
   const s = S().subjects.find(x=>x.id===subjectId);
-  quizQuestions = s.quiz.slice();
+  quizQuestions = buildQuiz(s);
+  if(!quizQuestions.length){ renderReviewers(); return; }
   quizIndex = 0;
   quizAnswers = new Array(quizQuestions.length).fill(null);
   quizStage = 'active';
@@ -1416,13 +1564,12 @@ function renderQuizActive(s){
   const selected = quizAnswers[quizIndex];
   return `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
-      <span style="font-size:12.5px;color:var(--ink-soft);">Question ${quizIndex+1} of ${quizQuestions.length}</span>
+      <span style="font-size:calc(12.5px * var(--fs));color:var(--ink-soft);">Question ${quizIndex+1} of ${quizQuestions.length}</span>
       ${quizTimed?`<span id="quizTimerDisplay" class="tag due" style="font-family:'Manrope';font-weight:700;">${formatQuizTime(quizSecondsLeft)}</span>`:''}
     </div>
     <div class="card">
-      <span class="tag">${esc(q.difficulty||'Easy')}</span>
-      ${q.image?`<img src="${safeUrl(q.image)}" style="max-width:100%;max-height:220px;border-radius:12px;margin-top:10px;object-fit:contain;display:block;">`:''}
-      <div class="quiz-q" style="margin-top:10px;">${esc(q.q)}</div>
+      ${q.image?`<img loading="lazy" decoding="async" src="${safeUrl(q.image)}" alt="" style="max-width:100%;max-height:220px;border-radius:12px;margin-bottom:10px;object-fit:contain;display:block;">`:''}
+      <div class="quiz-q">${esc(q.q)}</div>
       ${q.choices.map((c,ci)=>`<button class="quiz-opt ${selected===ci?'selected':''}" onclick="selectQuizAnswer(${ci})">${esc(c)}</button>`).join('')}
     </div>
     <div class="flash-nav" style="margin-top:16px;">
@@ -1439,7 +1586,12 @@ function selectQuizAnswer(ci){
 }
 function finishQuiz(){
   stopQuizTimer();
+  if(quizStage!=='active') return;
   quizStage = 'results';
+  let correct = 0;
+  quizQuestions.forEach((q,i)=>{ if(quizAnswers[i]===q.answer) correct++; });
+  const s = S().subjects.find(x=>x.id===revSubjectId);
+  histAdd({kind:'quiz', subjectId:revSubjectId, subject:s?s.name:'', correct, wrong:quizQuestions.length-correct, total:quizQuestions.length});
   renderReviewers();
 }
 
@@ -1447,22 +1599,15 @@ function finishQuiz(){
 function renderQuizResults(s){
   let correct = 0;
   quizQuestions.forEach((q,i)=>{ if(quizAnswers[i]===q.answer) correct++; });
-  const pct = quizQuestions.length ? Math.round(correct/quizQuestions.length*100) : 0;
-  let html = `
-    <div class="card" style="text-align:center;">
-      <h3>Quiz Results</h3>
-      <p style="font-size:32px;font-family:'Manrope';font-weight:800;color:var(--accent);margin:10px 0;">${correct}/${quizQuestions.length}</p>
-      <p style="color:var(--ink-soft);">${pct}% correct</p>
-    </div>
-    <div class="section-label">Review</div>
-  `;
+  const wrong = quizQuestions.length - correct;
+  let html = resultBox('Quiz results', correct, wrong, 'Saved to your history progress.') + `<div class="section-label">Review</div>`;
   quizQuestions.forEach((q,i)=>{
     const userAns = quizAnswers[i];
     const isCorrect = userAns===q.answer;
     html += `<div class="card" style="margin-bottom:10px;">
       <span class="tag ${isCorrect?'':'due'}">${isCorrect?'Correct':(userAns===null?'Skipped':'Incorrect')}</span>
-      ${q.image?`<img src="${safeUrl(q.image)}" style="max-width:100%;max-height:180px;border-radius:12px;margin-top:8px;object-fit:contain;display:block;">`:''}
-      <div class="quiz-q" style="margin-top:8px;font-size:14px;">${i+1}. ${esc(q.q)}</div>
+      ${q.image?`<img loading="lazy" decoding="async" src="${safeUrl(q.image)}" alt="" style="max-width:100%;max-height:180px;border-radius:12px;margin-top:8px;object-fit:contain;display:block;">`:''}
+      <div class="quiz-q" style="margin-top:8px;font-size:calc(14px * var(--fs));">${i+1}. ${esc(q.q)}</div>
       ${q.choices.map((c,ci)=>{
         let cls = '';
         if(ci===q.answer) cls='correct';
@@ -1472,8 +1617,8 @@ function renderQuizResults(s){
     </div>`;
   });
   html += `
-    <div style="display:flex;gap:10px;margin-top:10px;">
-      <button class="btn" onclick="quizStage='setup';renderReviewers()">Retake</button>
+    <div class="result-actions">
+      <button class="btn" onclick="startQuiz('${s.id}')">Retake</button>
       <button class="btn ghost" onclick="revBack()">Back to subjects</button>
     </div>
   `;
@@ -1638,4 +1783,7 @@ updateSyncDot();
 if('serviceWorker' in navigator && /^https?:$/.test(location.protocol) &&
    !(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform())){
   window.addEventListener('load', ()=>{ navigator.serviceWorker.register('sw.js').catch(()=>{}); });
+  navigator.serviceWorker.addEventListener('message', e=>{
+    if(e.data==='updated') showToast('A new version is ready — close and reopen the app to use it.', 6000);
+  });
 }

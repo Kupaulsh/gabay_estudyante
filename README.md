@@ -90,3 +90,11 @@ npx cap add android  # first time only
 npm run sync         # copies the web files into www/ and syncs them into the Android project
 npm run open         # opens Android Studio → Build → Build APK(s)
 ```
+
+## New in this version
+- **Reviewers**: flashcards with ✓ / ✕ and a results box; the Mock Quiz is built from the flashcards; Pomodoro Timer; History progress (saved on the device).
+- **Account**: text size (− 16 +) and light / dark mode.
+- **Conflicts**: if two admins edit the same thing while one is offline, non-clashing fields merge, the other admin's value is kept for clashes, and Account → Edit conflicts lets you choose "Use mine".
+- **Faster loading**: `npm run build` minifies everything into `www/`. The service worker keeps the app files and images on the device.
+- **Pomodoro alarm on Android**: add `<uses-permission android:name="android.permission.VIBRATE"/>` to `android/app/src/main/AndroidManifest.xml` (next to the INTERNET permission), then `npm run sync`.
+- **Optional GitHub Pages deploy of the minified build**: Settings → Pages → Source: "GitHub Actions" (uses `.github/workflows/pages.yml`).

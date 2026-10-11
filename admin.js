@@ -51,12 +51,12 @@ function toggleEditMode(){
 function openSignInModal(){
   sessionStorage.setItem('shAdminPending', '1');
   openModal(`<h3>Admin sign-in</h3>
-    <p style="font-size:12.5px;color:var(--ink-soft);">Sign in with the Google account that's on this project's admin list. You only need to do this once — the app remembers you. After that, use the pencil button to turn editing on and off.</p>
+    <p style="font-size:calc(12.5px * var(--fs));color:var(--ink-soft);">Sign in with the Google account that's on this project's admin list. You only need to do this once — the app remembers you. After that, use the pencil button to turn editing on and off.</p>
     <button class="btn" style="display:flex;align-items:center;justify-content:center;gap:10px;width:100%;margin-bottom:10px;" onclick="signInWithGoogle()">
       <svg width="16" height="16" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.4 29.3 35 24 35c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.1 8 3l6-6C34.5 5 29.6 3 24 3 12.4 3 3 12.4 3 24s9.4 21 21 21 21-9.4 21-21c0-1.4-.1-2.5-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 16 19 13 24 13c3.1 0 5.8 1.1 8 3l6-6C34.5 6 29.6 4 24 4c-7.7 0-14.3 4.4-17.7 10.7z"/><path fill="#4CAF50" d="M24 45c5.5 0 10.4-1.9 14.2-5.1l-6.6-5.4C29.6 36 26.9 37 24 37c-5.3 0-9.7-3.5-11.3-8.3l-6.6 5.1C9.6 40.5 16.2 45 24 45z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.3 4.3-4.2 5.6l6.6 5.4C39.9 37.4 43 31.1 43 24c0-1.4-.1-2.5-.4-3.5z"/></svg>
       Sign in with Google
     </button>
-    <p id="signInStatus" style="font-size:12px;color:var(--ink-soft);min-height:16px;"></p>`);
+    <p id="signInStatus" style="font-size:calc(12px * var(--fs));color:var(--ink-soft);min-height:16px;"></p>`);
 }
 function setSignInStatus(msg){
   const el = document.getElementById('signInStatus');
@@ -81,7 +81,7 @@ async function signInWithGoogle(){
   } else {
     const {error} = await supabase.auth.signInWithOAuth({
       provider: 'google',
-      options: { redirectTo: window.location.href.split('#')[0].split('?')[0] }
+      options: { redirectTo: window.location.origin + window.location.pathname.replace(/index\.html$/, '') }
     });
     if(error){ setSignInStatus('Sign-in error: ' + error.message); }
     signInInFlight = false;
@@ -197,6 +197,21 @@ supabase.auth.onAuthStateChange((event, session)=>{
 });
 checkAdminSession();
 
+// If Google / Supabase sent us back with an error, show it instead of failing silently
+(function showAuthRedirectError(){
+  try{
+    const q = new URLSearchParams(window.location.search);
+    const h = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+    const msg = h.get('error_description') || q.get('error_description') || h.get('error') || q.get('error');
+    if(!msg) return;
+    history.replaceState(null, '', window.location.pathname);
+    openModal(`<h3>Sign-in didn't finish</h3>
+      <p style="font-size:calc(13px * var(--fs));color:var(--ink-soft);word-break:break-word;">${esc(msg.replace(/\+/g,' '))}</p>
+      <p style="font-size:calc(12.5px * var(--fs));color:var(--ink-soft);">Check that this site's address is listed under Supabase → Authentication → URL Configuration (Site URL and Redirect URLs), and that your Google email is added as a test user if the Google app is in "Testing" mode.</p>
+      <button class="btn" style="width:100%;" onclick="closeModal();openSignInModal()">Try again</button>`);
+  }catch(e){}
+})();
+
 // Common refresh-then-rerender used after every save/delete
 async function adminRefreshAndRerender(){
   await refreshCurrentSchool();
@@ -253,7 +268,7 @@ function adminEditSubject(id){
 
   <div class="modal-section">
     <div class="modal-section-title">Schedule</div>
-    <p style="color:var(--ink-soft);font-size:12.5px;margin-top:-4px;">One entry per class meeting — e.g. "Mon" for lecture and a separate "Wed" for lab.</p>
+    <p style="color:var(--ink-soft);font-size:calc(12.5px * var(--fs));margin-top:-4px;">One entry per class meeting — e.g. "Mon" for lecture and a separate "Wed" for lab.</p>
     <div id="scheduleList">${adminScheduleList(s.schedule, id)}</div>
     <div class="form-grid">
       <div class="two-col">
@@ -295,7 +310,7 @@ function adminEditSubject(id){
   openModal(html);
 }
 function adminBookList(books, subjId){
-  if(!books || books.length===0) return `<p style="font-size:12.5px;color:var(--ink-soft);">None yet.</p>`;
+  if(!books || books.length===0) return `<p style="font-size:calc(12.5px * var(--fs));color:var(--ink-soft);">None yet.</p>`;
   return books.map(b=>`<div class="admin-list-item"><div class="info"><b>${esc(b.label)}</b><br><small>${b.author?esc(b.author)+' — ':''}${esc(b.url)}</small></div><button class="btn sm danger" onclick="adminDeleteBook('${subjId}','${b.id}')">Delete</button></div>`).join('');
 }
 async function adminAddBook(subjId){
@@ -313,7 +328,7 @@ async function adminDeleteBook(subjId, bookId){
   adminEditSubject(subjId);
 }
 function adminScheduleList(slots, subjId){
-  if(slots.length===0) return `<p style="font-size:12.5px;color:var(--ink-soft);">None yet — this subject won't show up on the Schedule page until you add one.</p>`;
+  if(slots.length===0) return `<p style="font-size:calc(12.5px * var(--fs));color:var(--ink-soft);">None yet — this subject won't show up on the Schedule page until you add one.</p>`;
   return slots.map(sl=>`<div class="admin-list-item"><div class="info"><b>${esc(sl.day||'?')} · ${esc(sl.time||'TBA')}</b><br><small>${esc(sl.professor||'Professor TBA')} · Room ${esc(sl.room||'TBA')}</small></div><button class="btn sm danger" onclick="adminDeleteScheduleSlot('${subjId}','${sl.id}')">Delete</button></div>`).join('');
 }
 async function adminAddScheduleSlot(subjId){
@@ -331,7 +346,7 @@ async function adminDeleteScheduleSlot(subjId, slotId){
   adminEditSubject(subjId);
 }
 function adminFileList(list, table, subjId){
-  if(list.length===0) return `<p style="font-size:12.5px;color:var(--ink-soft);">None yet.</p>`;
+  if(list.length===0) return `<p style="font-size:calc(12.5px * var(--fs));color:var(--ink-soft);">None yet.</p>`;
   return list.map((f)=>`<div class="admin-list-item"><div class="info"><b>${esc(f.label)}</b><br><small>${esc(f.type||'')} — ${esc(f.url)}</small></div><button class="btn sm danger" onclick="adminDeleteFile('${table}','${f.id}','${subjId}')">Delete</button></div>`).join('');
 }
 function adminFileAddForm(table, subjId){
@@ -371,13 +386,13 @@ async function adminSaveSubject(id){
 
 /* ---- Reviewers admin (flashcards + quiz per subject) ---- */
 function adminReviewers(D){
-  if(D.subjects.length===0) return `<p style="color:var(--ink-soft);">Add subjects first (in the Subjects tab), then add flashcards and quiz questions here.</p>`;
+  if(D.subjects.length===0) return `<p style="color:var(--ink-soft);">Add subjects first (in the Subjects tab), then add flashcards here (the Mock Quiz is made from them).</p>`;
   let html = '';
   D.subjects.forEach(s=>{
     html += `<div class="admin-list-item">
       <div class="info">
         <b>${esc(s.name)}</b>
-        <small>${s.flashcards.length} flashcard(s) · ${s.quiz.length} quiz question(s)</small>
+        <small>${s.flashcards.length} flashcard(s)</small>
       </div>
       <button class="btn sm ghost" onclick="adminEditReviewer('${s.id}')">Edit</button>
     </div>`;
@@ -397,19 +412,7 @@ function adminEditReviewer(id){
     <input id="fc_img" placeholder="Image URL (optional — direct image link)">
     <button class="btn ghost" onclick="adminAddFlash('${id}')">+ Add flashcard</button>
   </div>
-
-  <div class="section-label">Quiz questions</div>
-  <div id="quizList">${s.quiz.map((q)=>`<div class="admin-list-item"><div class="info">${q.image?`<img src="${safeUrl(q.image)}" style="width:100%;max-width:160px;border-radius:8px;margin-bottom:6px;display:block;">`:''}<b>${esc(q.q)}</b><br><small>Choices: ${esc(q.choices.join(' | '))} — Correct: ${esc(q.choices[q.answer])} — ${esc(q.difficulty)}</small></div><button class="btn sm danger" onclick="adminDeleteQuiz('${id}','${q.id}')">Delete</button></div>`).join('')}</div>
-  <div class="form-grid">
-    <input id="qz_q" placeholder="Question">
-    <input id="qz_choices" placeholder="Choices, separated by $ (e.g. A $ B $ C $ D)">
-    <input id="qz_answer" placeholder="Correct answer (must match one choice exactly)">
-    <select id="qz_diff">
-      <option>Easy</option><option>Average</option><option>Hard</option><option>Very Hard</option>
-    </select>
-    <input id="qz_img" placeholder="Image URL (optional — direct image link)">
-    <button class="btn ghost" onclick="adminAddQuiz('${id}')">+ Add quiz question</button>
-  </div>`;
+  <p class="modal-sub">The Mock Quiz is made from these flashcards automatically.</p>`;
   openModal(html);
 }
 async function adminAddFlash(subjId){
@@ -517,9 +520,9 @@ async function adminDeleteEvent(id){
 /* ---- Activities admin ---- */
 function adminActivities(D){
   let html = `<button class="btn" onclick="adminAddActivity()">+ Add activity</button>
-  <p style="color:var(--ink-soft);font-size:12.5px;margin-top:8px;">Due dates are automatically added to the Calendar too.</p>
+  <p style="color:var(--ink-soft);font-size:calc(12.5px * var(--fs));margin-top:8px;">Due dates are automatically added to the Calendar too.</p>
   <div class="section-label">All activities</div>
-  ${D.activities.length ? `<button class="btn ghost sm" onclick="adminResyncAllActivities()" style="margin-bottom:12px;">↻ Sync all to Calendar</button><p style="color:var(--ink-soft);font-size:11.5px;margin-top:-8px;">Use this once if you have older activities from before dates auto-synced.</p>` : ''}`;
+  ${D.activities.length ? `<button class="btn ghost sm" onclick="adminResyncAllActivities()" style="margin-bottom:12px;">↻ Sync all to Calendar</button><p style="color:var(--ink-soft);font-size:calc(11.5px * var(--fs));margin-top:-8px;">Use this once if you have older activities from before dates auto-synced.</p>` : ''}`;
   D.activities.forEach(a=>{
     html += `<div class="admin-list-item"><div class="info"><b>${esc(a.title)}</b><br><small>${esc(a.type)} · starts ${esc(a.start||'TBA')} · due ${esc(a.due||'TBA')}</small></div>
       <div style="display:flex;gap:6px;">
@@ -656,9 +659,9 @@ function adminRules(D){
     <button class="btn" onclick="adminSaveRules()">Save</button>
   </div>
   <div class="section-label">More sections</div>
-  <p style="color:var(--ink-soft);font-size:12.5px;margin-top:-6px;">Add anything else that doesn't fit above — university hymn, strategic goals, rules & regulations, dress code, whatever you need. Each one shows up as its own block on the Rules and Others page.</p>`;
+  <p style="color:var(--ink-soft);font-size:calc(12.5px * var(--fs));margin-top:-6px;">Add anything else that doesn't fit above — university hymn, strategic goals, rules & regulations, dress code, whatever you need. Each one shows up as its own block on the Rules and Others page.</p>`;
   if(r.guidelines.length===0){
-    html += `<p style="color:var(--ink-soft);font-size:12.5px;">None yet.</p>`;
+    html += `<p style="color:var(--ink-soft);font-size:calc(12.5px * var(--fs));">None yet.</p>`;
   }
   r.guidelines.forEach((g)=>{
     html += `<div class="admin-list-item"><div class="info"><b>${esc(g.title)}</b><br><small>${esc(g.body)}</small></div>
@@ -722,7 +725,7 @@ function openThemeModal(){
   const D = DATA[currentSchool];
   openModal(`
     <h3>Colors for ${esc(D.fullName)}</h3>
-    <p style="color:var(--ink-soft);font-size:12.5px;">These apply site-wide whenever someone is viewing this school. Changes save immediately and preview here too.</p>
+    <p style="color:var(--ink-soft);font-size:calc(12.5px * var(--fs));">These apply site-wide whenever someone is viewing this school. Changes save immediately and preview here too.</p>
     <div class="two-col" style="margin-top:16px;max-width:320px;">
       <div>
         <label>Accent color</label>
