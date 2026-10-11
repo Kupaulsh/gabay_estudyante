@@ -283,3 +283,10 @@ create policy "admin insert schools" on schools for insert with check (is_admin(
 -- 3. Paste them into supabase-client.js
 -- 4. Make sure your real Google email is in the `admins` table above
 -- ============================================================
+
+-- Flashcards by semester + lesson, and quiz groups (see migration_reviewers.sql)
+alter table flashcards add column if not exists semester_id uuid references semesters(id) on delete set null;
+alter table flashcards add column if not exists lesson integer not null default 1;
+alter table flashcards add column if not exists quiz_group integer not null default 0;
+update flashcards f set semester_id = s.semester_id
+from subjects s where s.id = f.subject_id and f.semester_id is null;

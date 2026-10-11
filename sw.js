@@ -8,7 +8,7 @@ const IMG_CACHE = 'gabay-img-v1';
 const IMG_MAX = 80;
 /*SHELL*/
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'admin.js', 'data.js', 'study.js', 'notifications.js',
-  'supabase-client.js', 'vendor-supabase.js', 'GaEs_Icon.png', 'pccm-logo.png', 'tup-logo.png'];
+  'supabase-client.js', 'vendor-supabase.js', 'GaEs_Icon.png', 'pccm-logo.png', 'tup-logo.png', 'alarm.wav', 'alarm2.wav'];
 /*END*/
 
 self.addEventListener('install', e=>{

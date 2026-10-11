@@ -9,6 +9,9 @@
 const NOTIF_ID_BASE_ACTIVITY = 100000; // 100000–189999 reserved for due-date reminders
 const NOTIF_ID_BASE_CLASS    = 200000; // 200000–289999 reserved for class reminders
 const NOTIF_ID_RANGE = 90000;
+const ACT_SOUND = 'alarm.wav';      // activity reminders
+const CLASS_SOUND = 'alarm2.wav';   // schedule (class) reminders — a different rhythm
+// Android needs the same file names inside android/app/src/main/res/raw/
 
 function isNativeApp(){
   return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
@@ -35,6 +38,37 @@ async function initNotifications(){
       await LN.requestPermissions();
     }
   }catch(e){ console.error('Notification permission error:', e); }
+  try{
+    await LN.createChannel({id:'activity-alarm', name:'Activity reminders', description:'Due-date reminders', importance:5, visibility:1, vibration:true, sound:ACT_SOUND});
+    await LN.createChannel({id:'class-alarm', name:'Class reminders', description:'Class starting soon', importance:5, visibility:1, vibration:true, sound:CLASS_SOUND});
+  }catch(e){ console.error('Notification channel error:', e); }
+  if(!notifActionsReady){
+    notifActionsReady = true;
+    try{
+      await LN.registerActionTypes({types:[
+        {id:'ACT_REMINDER', actions:[{id:'completed', title:'Completed'}, {id:'notyet', title:'Not Yet'}, {id:'ohno', title:'Oh No'}]}
+      ]});
+      await LN.addListener('localNotificationActionPerformed', onActivityNotifAction);
+    }catch(e){ console.error('Notification action error:', e); }
+  }
+}
+let notifActionsReady = false;
+
+// Buttons on an activity reminder: Completed marks it done, Not Yet leaves it, Oh No opens it.
+async function onActivityNotifAction(ev){
+  try{
+    const n = ev && ev.notification;
+    if(!n || n.actionTypeId!=='ACT_REMINDER' || !n.extra) return;
+    const id = n.extra.activityId, school = n.extra.school;
+    if(ev.actionId==='completed'){
+      if(id && !getCompletedSet().has(id)) toggleCompletedFlag(id);
+      if(typeof currentPage!=='undefined' && currentPage==='activities') renderActivities();
+      if(typeof showToast==='function') showToast('Marked as completed');
+    } else if(ev.actionId==='ohno'){
+      if(school && school!==currentSchool) await enterApp(school);
+      if(currentSchool && S() && S().activities.some(a=>a.id===id)){ goPage('activities'); openActivity(id); }
+    }
+  }catch(e){ console.error('Notification action failed:', e); }
 }
 
 // Weekday numbers expected by Capacitor's schedule.on.weekday: Sunday=1 ... Saturday=7
@@ -69,7 +103,9 @@ async function scheduleAllNotifications(){
         id: hashToNotifId(a.id, NOTIF_ID_BASE_ACTIVITY),
         title: `Due tomorrow: ${a.title}`,
         body: `${a.type} — due ${a.due}`,
-        schedule: { at: reminderAt },
+        schedule: { at: reminderAt, allowWhileIdle:true },
+        channelId: 'activity-alarm', sound: ACT_SOUND,
+        actionTypeId: 'ACT_REMINDER', extra: {activityId: a.id, school: currentSchool},
         smallIcon: 'ic_stat_icon_config_sample'
       });
     });
@@ -90,6 +126,7 @@ async function scheduleAllNotifications(){
           title: `Starting soon: ${s.name}`,
           body: `Starts ${sl.time} · Room ${sl.room||'TBA'}`,
           schedule: { on: {weekday, hour, minute}, allowWhileIdle:true },
+          channelId: 'class-alarm', sound: CLASS_SOUND,
           smallIcon: 'ic_stat_icon_config_sample'
         });
       });

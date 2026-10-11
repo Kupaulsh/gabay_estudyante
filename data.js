@@ -296,7 +296,7 @@ const CHILD_TABLES = ['schedule_slots','syllabus_files','materials','flashcards'
 function emptyStore(){
   return {school:null, semestersOk:false, semesters:[], subjects:[], schedule_slots:[], syllabus_files:[],
     materials:[], flashcards:[], quiz_questions:[], pdf_books:[], events:[], activities:[],
-    faqs:[], rules:[], guidelines:[], item_types:[]};
+    faqs:[], rules:[], guidelines:[], item_types:[], cardsExt:false};
 }
 let RAW = {};   // schoolId -> flat store (all semesters)
 
@@ -354,12 +354,13 @@ async function fetchStore(schoolId){
       supabase.from('guidelines').select('*').eq('school_id', schoolId),
       // Optional tables: if a migration hasn't been run yet these just error quietly and the app works without them.
       supabase.from('item_types').select('*').eq('school_id', schoolId).order('created_at', {ascending:true}),
-      supabase.from('semesters').select('*').eq('school_id', schoolId).order('created_at', {ascending:true})
+      supabase.from('semesters').select('*').eq('school_id', schoolId).order('created_at', {ascending:true}),
+      supabase.from('flashcards').select('lesson, quiz_group, semester_id').limit(1)
     ]);
   }catch(e){ return null; }
   if(r.some(x=>x && x.error && isNetworkError(x.error))) return null;
 
-  const [schoolRes, subjectsRes, eventsRes, activitiesRes, faqsRes, rulesRes, guidelinesRes, typesRes, semRes] = r;
+  const [schoolRes, subjectsRes, eventsRes, activitiesRes, faqsRes, rulesRes, guidelinesRes, typesRes, semRes, cardsExtRes] = r;
   [schoolRes, subjectsRes, eventsRes, activitiesRes, faqsRes, rulesRes, guidelinesRes].forEach(x=>{
     if(x.error) console.error('Supabase load error:', x.error);
   });
@@ -367,6 +368,7 @@ async function fetchStore(schoolId){
   const store = emptyStore();
   store.school = schoolRes.data || null;
   store.semestersOk = !semRes.error;
+  store.cardsExt = !cardsExtRes.error;       // lessons + quiz groups available (migration_reviewers.sql)
   store.semesters = semRes.error ? [] : (semRes.data || []);
   (subjectsRes.data || []).forEach(s=>{
     const base = Object.assign({}, s);
@@ -470,7 +472,32 @@ function shapeSchoolData(store, semesterId){
   (store.activities || []).forEach(a=>{ actById[a.id] = a; });
   const known = (SCHOOLS || []).find(s=>s.id===(store.school && store.school.id));
 
+  // Reviewers: subjects with the same name in different semesters are one subject here,
+  // and each flashcard knows its own semester + lesson (+ quiz group).
+  const normName = x => String(x||'').trim().toLowerCase().replace(/\s+/g,' ');
+  const reviewers = [], byName = {};
+  const subjById = {};
+  (store.subjects || []).forEach(s=>{
+    subjById[s.id] = s;
+    const k = normName(s.name);
+    if(!byName[k]){ byName[k] = {key:k, name:s.name, color:s.color, subjectIds:[], rows:[], cards:[]}; reviewers.push(byName[k]); }
+    byName[k].subjectIds.push(s.id);
+    byName[k].rows.push({id:s.id, semesterId:s.semester_id || firstId});
+  });
+  (store.flashcards || []).forEach(f=>{
+    const s = subjById[f.subject_id];
+    if(!s) return;
+    byName[normName(s.name)].cards.push({id:f.id, subjectId:f.subject_id, q:f.question, a:f.answer, image:f.image_url,
+      semesterId: f.semester_id || s.semester_id || firstId, lesson: f.lesson || 1, group: f.quiz_group || 0});
+  });
+  // Show the subjects of this semester first, then the ones only found in other semesters
+  const here = new Set(subjectsRows.map(s=>normName(s.name)));
+  reviewers.sort((a,b)=> (here.has(b.key)?1:0) - (here.has(a.key)?1:0));
+
   return {
+    cardsExt: !!store.cardsExt,
+    reviewerSubjects: reviewers,
+    allSemesters: sems.map(s=>({id:s.id, name:s.name})),
     fullName: (store.school && store.school.full_name) || (known && known.full_name) || '',
     accentColor: (store.school && store.school.accent_color) || '#2F6F5E',
     bgColor: (store.school && store.school.bg_color) || '#F6F5F0',
@@ -605,11 +632,20 @@ async function dbDeleteBook(id){
 }
 
 /* ---- Flashcards ---- */
-async function dbAddFlashcard(subjectId, q, a, imageUrl){
-  const {error} = await mutate('flashcards', 'insert', {row: {subject_id: subjectId, question: q, answer: a, image_url: imageUrl || ''}});
-  if(error) alert('Could not add flashcard: ' + error.message);
+// extra = {semester_id, lesson, quiz_group}; ignored until migration_reviewers.sql has been run
+async function dbAddFlashcard(subjectId, q, a, imageUrl, extra, quiet){
+  const row = {subject_id: subjectId, question: q, answer: a, image_url: imageUrl || ''};
+  if(extra && currentStoreHasCardsExt()) Object.assign(row, extra);
+  const {error} = await mutate('flashcards', 'insert', {row});
+  if(error){ if(!quiet) alert('Could not add flashcard: ' + error.message); return false; }
+  return true;
+}
+function currentStoreHasCardsExt(){
+  const st = (typeof currentSchool!=='undefined' && currentSchool) ? RAW[currentSchool] : null;
+  return !!(st && st.cardsExt);
 }
 async function dbUpdateFlashcard(id, fields){
+  if(!currentStoreHasCardsExt()){ fields = Object.assign({}, fields); delete fields.semester_id; delete fields.lesson; delete fields.quiz_group; if(!Object.keys(fields).length) return; }
   const {error} = await mutate('flashcards', 'update', {fields, match: [['id', id]]});
   if(error) alert('Could not update flashcard: ' + error.message);
 }

@@ -48,7 +48,7 @@ if(esbuild){
 }
 write('index.html', html);
 
-const images = fs.readdirSync(__dirname).filter(f => /\.(png|jpe?g|svg|webp|ico)$/i.test(f));
+const images = fs.readdirSync(__dirname).filter(f => /\.(png|jpe?g|svg|webp|ico|wav|mp3|ogg)$/i.test(f));
 images.forEach(f => { fs.copyFileSync(path.join(__dirname, f), path.join(out, f)); shell.push(f); });
 
 // tell the service worker which files to keep (a new bundle name also refreshes the cache)

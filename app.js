@@ -1214,76 +1214,142 @@ function openActivity(id){
 
 /* =========================================================
    REVIEWERS
-   - Flashcards: tap to flip, then ✓ (got it) or ✕ (missed it). When the
-     deck is finished a results box shows and the round is saved to History.
-   - Mock Quiz: built from the flashcards. Every flashcard question becomes a
-     question; its answer plus other flashcards' answers become the choices.
-   - Pomodoro Timer and History progress live in study.js.
+   Subject → Semester (or All Semester) → Lesson (or All Lesson) → study or edit.
+   - Study (editing off): Flashcards (tap, flip, ✓ / ✕) and Mock Quiz, each with an
+     optional timer. Results are saved to History Progress.
+   - Edit (pencil on): the same places show the LIST of flashcards / quiz questions.
+     Select cards → transfer them to another semester + lesson, set a quiz group, or delete.
+   - Every quiz question is a flashcard (question, answer and image travel together).
+   - Pomodoro Timer and History Progress live in study.js.
 ========================================================= */
 let revMode = 'flashcards';   // 'flashcards' | 'quiz' | 'pomodoro' | 'history'
-let revView = 'list';         // 'list' | 'detail'  (flashcards only)
-let revSubjectId = null;
+let revKey = null;            // chosen subject (merged across semesters)
+let revSem = null;            // null = not chosen yet, semester id, or 'all'
+let revLesson = null;         // null = not chosen yet, lesson number, or 'all'
+let studyStage = 'setup';     // 'setup' | 'active' | 'results'
+let revTimed = false, revMinutes = 10;
+let selMode = false, selIds = new Set();
 
 // Flashcard round
-let fc = null;                // {subjectId, ids, pos, flipped, right, wrong, missed, practice}
+let fc = null;                // {ids, pos, flipped, right, wrong, missed, practice, saved, timedOut, secondsLeft}
+let flashTimerId = null;
 
-// Mock quiz state
-let quizStage = 'list';       // 'list' | 'setup' | 'active' | 'results'
-let quizTimed = false;
-let quizMinutes = 10;
-let quizQuestions = [];
-let quizIndex = 0;
-let quizAnswers = [];
-let quizTimerId = null;
-let quizSecondsLeft = 0;
+// Mock quiz round
+let quizQuestions = [], quizIndex = 0, quizAnswers = [], quizTimerId = null, quizSecondsLeft = 0, quizSkipped = 0;
 
 function shuffle(a){
   a = a.slice();
   for(let i=a.length-1;i>0;i--){ const j = Math.floor(Math.random()*(i+1)); [a[i],a[j]] = [a[j],a[i]]; }
   return a;
 }
+function normAns(x){ return String(x||'').trim().toLowerCase().replace(/\s+/g,' '); }
 
+/* ---- helpers ---- */
+function revSubjects(){ return S().reviewerSubjects || []; }
+function revSubject(){ return revSubjects().find(s=>s.key===revKey) || null; }
+function revSemesters(){ return S().allSemesters || []; }
+function revHasSem(){ return revSemesters().length>0; }
+function revExt(){ return !!S().cardsExt; }
+function semNameOf(id){ const m = revSemesters().find(x=>x.id===id); return m ? m.name : ''; }
+function scopeChosen(){ return !!revKey && revSem!==null && revLesson!==null; }
+function inScope(c, sem, lesson){
+  return (sem==='all' || sem===null || c.semesterId===sem) && (lesson==='all' || lesson===null || c.lesson===lesson);
+}
+function scopeCards(s){ return s.cards.filter(c=>inScope(c, revSem, revLesson)); }
+function lessonsOf(s, sem){
+  return [...new Set(s.cards.filter(c=>sem==='all'||c.semesterId===sem).map(c=>c.lesson))].sort((a,b)=>a-b);
+}
+function scopeLabel(){
+  const parts = [];
+  if(revHasSem()) parts.push(revSem==='all' ? 'All Semester' : semNameOf(revSem));
+  if(revExt() && revSem!=='all') parts.push(revLesson==='all' ? 'All Lesson' : 'Lesson ' + revLesson);
+  return parts.join(' · ');
+}
+function noun(n, one, many){ return n + ' ' + (n===1 ? one : many); }
+function groupsOf(s){
+  const g = {};
+  s.cards.forEach(c=>{ if(c.group) g[c.group] = (g[c.group]||0) + 1; });
+  return g;
+}
+
+/* ---- navigation ---- */
+function stopRevTimers(){
+  if(quizTimerId){ clearInterval(quizTimerId); quizTimerId = null; }
+  if(flashTimerId){ clearInterval(flashTimerId); flashTimerId = null; }
+}
+function clearSel(){ selMode = false; selIds = new Set(); }
 function revSetMode(m){
-  revMode = m; revView = 'list'; quizStage = 'list'; fc = null;
-  stopQuizTimer();
+  revMode = m; fc = null; studyStage = 'setup'; stopRevTimers(); clearSel();
+  if(m==='flashcards' || m==='quiz'){ revKey = null; revSem = null; revLesson = null; }
   renderReviewers();
 }
-function revOpenSubject(id){
-  revSubjectId = id;
-  if(revMode==='quiz'){
-    quizStage = 'setup'; quizTimed = false; quizMinutes = 10;
-  } else {
-    startFlash(id);
-  }
+function revOpenSubject(i){
+  const sub = revSubjects()[i]; if(!sub) return;
+  revKey = sub.key; revLesson = null; studyStage = 'setup'; clearSel(); fc = null; stopRevTimers();
+  revSem = revHasSem() ? null : 'all';
+  if(revSem==='all') revLesson = 'all';
+  renderReviewers();
+}
+function revPickSem(id){
+  revSem = id; clearSel(); studyStage = 'setup';
+  revLesson = (id==='all' || !revExt()) ? 'all' : null;
+  renderReviewers();
+}
+function revPickLesson(n){
+  revLesson = n; clearSel(); studyStage = 'setup';
   renderReviewers();
 }
 function revBack(){
-  if(revMode==='quiz'){ stopQuizTimer(); quizStage = 'list'; }
-  else { revView = 'list'; fc = null; }
+  stopRevTimers(); fc = null; studyStage = 'setup'; clearSel();
+  if(revLesson!==null && revSem!=='all' && revExt() && revHasSem()){ revLesson = null; }
+  else if(revSem!==null && revHasSem()){ revSem = null; revLesson = null; }
+  else { revKey = null; revSem = null; revLesson = null; }
   renderReviewers();
 }
 
-/* ---- Flashcards: Add card / Edit card ---- */
+/* ---- Add / edit one card ---- */
 function openReviewerAdd(){
-  const inSubject = (revMode==='flashcards' && revView==='detail') || (revMode==='quiz' && quizStage!=='list');
-  openFlashcardModal(inSubject ? revSubjectId : null);
+  const s = revSubject();
+  const preset = {};
+  if(s && revSem && revSem!=='all') preset.semesterId = revSem;
+  if(s && revLesson && revLesson!=='all') preset.lesson = revLesson;
+  openFlashcardModal(null, null, preset);
 }
-function openFlashcardModal(subjectId, cardId, notice){
-  if(S().subjects.length===0){ alert('Add a subject first (Schedule page).'); return; }
+function groupOptionsHtml(s, selected){
+  const g = groupsOf(s), nums = Object.keys(g).map(Number).sort((a,b)=>a-b);
+  const next = (nums.length ? nums[nums.length-1] : 0) + 1;
+  let h = `<option value="0" ${!selected?'selected':''}>No group</option>`;
+  nums.forEach(n=>{ h += `<option value="${n}" ${selected===n?'selected':''}>Group ${n} (${g[n]})</option>`; });
+  if(selected && !g[selected]) h += `<option value="${selected}" selected>Group ${selected}</option>`;
+  h += `<option value="${next}">New group ${next}</option>`;
+  return h;
+}
+function openFlashcardModal(cardId, notice, preset){
+  preset = preset || {};
+  if(revSubjects().length===0){ alert('Add a subject first (Schedule page).'); return; }
   const isQ = revMode==='quiz';
-  const subj = subjectId ? S().subjects.find(x=>x.id===subjectId) : null;
-  const card = (subj && cardId) ? subj.flashcards.find(c=>c.id===cardId) : null;
-  const subjectField = subj
-    ? `<div><span class="modal-subject" style="--subj:${safeColor(subj.color)};">${esc(subj.name)}</span><input type="hidden" id="fc_subject" value="${esc(subj.id)}"></div>`
-    : `<div><label>Subject</label><select id="fc_subject">${S().subjects.map(x=>`<option value="${x.id}" ${x.id===revSubjectId?'selected':''}>${esc(x.name)}</option>`).join('')}</select></div>`;
+  const s = revSubject();
+  const card = (s && cardId) ? s.cards.find(c=>c.id===cardId) : null;
+  const ext = revExt();
+  const subjectField = s
+    ? `<div><span class="modal-subject" style="--subj:${safeColor(s.color)};">${esc(s.name)}</span><input type="hidden" id="fc_subject" value="${esc(s.key)}"></div>`
+    : `<div><label>Subject</label><select id="fc_subject">${revSubjects().map(x=>`<option value="${esc(x.key)}">${esc(x.name)}</option>`).join('')}</select></div>`;
+  const semSel = card ? card.semesterId : (preset.semesterId || S().semesterId);
+  const lesson = card ? card.lesson : (preset.lesson || 1);
+  const placeField = (ext ? `<div class="two-col">
+      ${revHasSem() ? `<div><label>Semester</label><select id="fc_sem">${revSemesters().map(m=>`<option value="${m.id}" ${m.id===semSel?'selected':''}>${esc(m.name)}</option>`).join('')}</select></div>` : ''}
+      <div><label>Lesson</label><input id="fc_lesson" type="number" min="1" max="999" inputmode="numeric" value="${lesson}"></div>
+    </div>
+    ${s ? `<div><label>Quiz group <small style="color:var(--ink-soft);">(answers only mix inside a group)</small></label><select id="fc_group">${groupOptionsHtml(s, card?card.group:0)}</select></div>` : ''}` : '');
   openModal(`<h3>${card ? (isQ?'Edit question':'Edit card') : (isQ?'Add question':'Add card')}</h3>
     ${notice?`<div class="modal-notice">${esc(notice)}</div>`:''}
-    ${isQ && !card ? `<p class="modal-sub" style="margin:0 0 10px;">Quiz questions come from flashcards. Write the question and its correct answer — the other choices are picked from your other answers.</p>`:''}
+    ${!ext ? `<p class="modal-sub" style="margin:0 0 10px;">Run <b>migration_reviewers.sql</b> in Supabase to turn on lessons, semesters and quiz groups.</p>`:''}
     <div class="form-grid">
       ${subjectField}
-      <div><label>${isQ?'Question':'Question (front)'}</label><textarea id="fc_q" rows="3" placeholder="${isQ?'The question':'Front of the card'}">${esc(card?card.q:'')}</textarea></div>
-      <div><label>${isQ?'Correct answer':'Answer (back)'}</label><textarea id="fc_a" rows="3" placeholder="${isQ?'The correct answer':'Back of the card'}">${esc(card?card.a:'')}</textarea></div>
-      <div><label>Image URL (optional)</label><input id="fc_img" value="${esc(card?card.image:'')}" placeholder="Direct image link"></div>
+      <div><label>Question</label><textarea id="fc_q" rows="3" placeholder="The question (front of the card)">${esc(card?card.q:'')}</textarea></div>
+      <div><label>Answer</label><textarea id="fc_a" rows="3" placeholder="The answer (back of the card)">${esc(card?card.a:'')}</textarea></div>
+      <div><label>Image link (optional)</label><input id="fc_img" value="${esc(card?card.image:'')}" placeholder="Direct image link — shows with the question"></div>
+      ${placeField}
     </div>
     <div class="modal-actions">
       ${card
@@ -1293,38 +1359,231 @@ function openFlashcardModal(subjectId, cardId, notice){
     </div>`);
   setTimeout(()=>{ const q = document.getElementById('fc_q'); if(q) q.focus(); }, 60);
 }
+function readPlace(s){
+  const out = {};
+  const semEl = document.getElementById('fc_sem'), lsEl = document.getElementById('fc_lesson'), gEl = document.getElementById('fc_group');
+  if(semEl) out.semester_id = semEl.value;
+  if(lsEl) out.lesson = Math.max(1, parseInt(lsEl.value, 10) || 1);
+  if(gEl) out.quiz_group = parseInt(gEl.value, 10) || 0;
+  return out;
+}
+function subjectRowFor(s, semesterId){
+  const r = s.rows.find(x=>x.semesterId===semesterId) || s.rows[0];
+  return r.id;
+}
 async function saveFlashcard(cardId, addAnother){
-  const subjId = document.getElementById('fc_subject').value;
+  const key = document.getElementById('fc_subject').value;
+  const s = revSubjects().find(x=>x.key===key);
   const q = document.getElementById('fc_q').value.trim();
   const a = document.getElementById('fc_a').value.trim();
   const img = document.getElementById('fc_img').value.trim();
   if(!q || !a){ alert('Fill in both the question and the answer.'); return; }
-  if(cardId) await dbUpdateFlashcard(cardId, {question:q, answer:a, image_url:img});
-  else await dbAddFlashcard(subjId, q, a, img);
+  const place = readPlace(s);
+  if(cardId){
+    await dbUpdateFlashcard(cardId, Object.assign({question:q, answer:a, image_url:img}, place));
+  } else {
+    await dbAddFlashcard(subjectRowFor(s, place.semester_id), q, a, img, place);
+  }
   await refreshCurrentSchool();
   if(addAnother){
     rerender();
-    openFlashcardModal(subjId, null, (revMode==='quiz'?'Question':'Card')+' added. Add another, or close when you’re done.');
+    openFlashcardModal(null, (revMode==='quiz'?'Question':'Card')+' added. Add another, or close when you’re done.',
+      {semesterId: place.semester_id, lesson: place.lesson});
   } else {
     closeModal();
     rerender();
   }
 }
 async function deleteFlashcard(id){
-  if(!confirm('Delete this flashcard?')) return;
+  if(!confirm('Delete this flashcard? Its quiz question goes with it.')) return;
   await dbDeleteFlashcard(id);
   await refreshCurrentSchool();
-  if(fc) fc.flipped = false;
+  selIds.delete(id);
+  renderReviewers();
+}
+async function setCardGroup(id, val){
+  await dbUpdateFlashcard(id, {quiz_group: parseInt(val, 10) || 0});
+  await refreshCurrentSchool();
   renderReviewers();
 }
 
+/* ---- Select / transfer / group / delete (edit mode) ---- */
+function toggleSelMode(){ selMode = !selMode; selIds = new Set(); renderReviewers(); }
+function toggleSel(id){ if(selIds.has(id)) selIds.delete(id); else selIds.add(id); renderReviewers(); }
+function selectAllShown(){
+  const s = revSubject(); if(!s) return;
+  const all = scopeCards(s);
+  if(selIds.size===all.length) selIds = new Set(); else selIds = new Set(all.map(c=>c.id));
+  renderReviewers();
+}
+function lessonOptionsHtml(s, sem, chosen){
+  const list = lessonsOf(s, sem);
+  const next = (list.length ? list[list.length-1] : 0) + 1;
+  let h = list.map(n=>`<option value="${n}" ${n===chosen?'selected':''}>Lesson ${n}</option>`).join('');
+  h += `<option value="${next}" ${!list.length||chosen===next?'selected':''}>New lesson ${next}</option>`;
+  return h;
+}
+function openTransfer(){
+  const s = revSubject();
+  if(!s || !selIds.size){ showToast('Select some cards first'); return; }
+  const sem = (revSem && revSem!=='all') ? revSem : (S().semesterId || (revSemesters()[0]||{}).id);
+  openModal(`<h3>Transfer ${noun(selIds.size, 'card', 'cards')}</h3>
+    <p class="modal-sub">The questions, answers and images move together — the mock quiz follows the flashcards.</p>
+    <div class="form-grid">
+      ${revHasSem() ? `<div><label>Semester</label><select id="tr_sem" onchange="refreshTransferLessons()">${revSemesters().map(m=>`<option value="${m.id}" ${m.id===sem?'selected':''}>${esc(m.name)}</option>`).join('')}</select></div>` : ''}
+      <div><label>Lesson</label><select id="tr_lesson">${lessonOptionsHtml(s, sem, null)}</select></div>
+    </div>
+    <div class="modal-actions"><button class="btn" onclick="doTransfer()">Transfer</button></div>`);
+}
+function refreshTransferLessons(){
+  const s = revSubject(), sem = document.getElementById('tr_sem').value;
+  document.getElementById('tr_lesson').innerHTML = lessonOptionsHtml(s, sem, null);
+}
+async function doTransfer(){
+  const semEl = document.getElementById('tr_sem');
+  const lesson = parseInt(document.getElementById('tr_lesson').value, 10) || 1;
+  const fields = {lesson};
+  if(semEl) fields.semester_id = semEl.value;
+  const ids = [...selIds];
+  for(const id of ids) await dbUpdateFlashcard(id, fields);
+  await refreshCurrentSchool();
+  closeModal(); clearSel();
+  showToast(`Moved ${noun(ids.length, 'card', 'cards')}` + (semEl ? ' to ' + semNameOf(semEl.value) : '') + ` · Lesson ${lesson}`);
+  renderReviewers();
+}
+function openBulkGroup(){
+  const s = revSubject();
+  if(!s || !selIds.size){ showToast('Select some questions first'); return; }
+  openModal(`<h3>Group ${noun(selIds.size, 'question', 'questions')}</h3>
+    <p class="modal-sub">Questions in a group only get their wrong choices from the same group. “No group” mixes with everything (always 4 choices).</p>
+    <div class="form-grid"><select id="bg_group">${groupOptionsHtml(s, 0)}</select></div>
+    <div class="modal-actions"><button class="btn" onclick="doBulkGroup()">Apply</button></div>`);
+}
+async function doBulkGroup(){
+  const g = parseInt(document.getElementById('bg_group').value, 10) || 0;
+  const ids = [...selIds];
+  for(const id of ids) await dbUpdateFlashcard(id, {quiz_group: g});
+  await refreshCurrentSchool();
+  closeModal(); clearSel();
+  renderReviewers();
+}
+async function bulkDelete(){
+  if(!selIds.size) return;
+  if(!confirm(`Delete ${noun(selIds.size, 'card', 'cards')}? Their quiz questions go too.`)) return;
+  const ids = [...selIds];
+  for(const id of ids) await dbDeleteFlashcard(id);
+  await refreshCurrentSchool();
+  clearSel();
+  renderReviewers();
+}
+
+/* ---- Paste-in format (notebook button) ---- */
+const AI_PROMPT = 'Turn the notes below into flashcards. Reply with ONLY lines in this exact format, one flashcard per line:\n' +
+  'Group Number && Question && Answer && Image Link\n' +
+  'Rules: Group Number is a whole number (put questions whose answers belong together in the same number, or use 0 if unsure). ' +
+  'Leave Image Link empty if there is none. Do not add any other text, numbering or bullets.\n\nNotes:\n';
+function openFormatBox(){
+  if(revSubjects().length===0){ alert('Add a subject first (Schedule page).'); return; }
+  const s = revSubject();
+  const sem = (revSem && revSem!=='all') ? revSem : (S().semesterId || (revSemesters()[0]||{}).id);
+  const lesson = (revLesson && revLesson!=='all') ? revLesson : 1;
+  const ext = revExt();
+  openModal(`<h3>Paste cards</h3>
+    <div class="format-box">
+      <p>Write one card per line and separate the parts with <b>&amp;&amp;</b>:</p>
+      <code>Group Number &amp;&amp; Question &amp;&amp; Answer &amp;&amp; Image Link</code>
+      <ul>
+        <li><b>Group Number</b> – questions with the same number get their multiple-choice answers from each other. Use <b>0</b> or leave it empty for no group.</li>
+        <li><b>Image Link</b> – optional. Leave it out if there is no picture.</li>
+      </ul>
+      <pre>1 &amp;&amp; Capital of France? &amp;&amp; Paris
+1 &amp;&amp; Capital of Italy? &amp;&amp; Rome &amp;&amp; https://site.com/rome.jpg
+0 &amp;&amp; Who wrote Noli Me Tangere? &amp;&amp; José Rizal</pre>
+      <p class="modal-sub" style="margin:8px 0 0;">Using AI or your notes? Copy the prompt, paste it with your notes into the AI, then paste its answer below.</p>
+      <button class="btn ghost sm" onclick="copyAiPrompt()">Copy AI prompt</button>
+    </div>
+    <div class="form-grid" style="margin-top:12px;">
+      ${s ? `<div><span class="modal-subject" style="--subj:${safeColor(s.color)};">${esc(s.name)}</span><input type="hidden" id="im_subject" value="${esc(s.key)}"></div>`
+          : `<div><label>Subject</label><select id="im_subject">${revSubjects().map(x=>`<option value="${esc(x.key)}">${esc(x.name)}</option>`).join('')}</select></div>`}
+      ${ext ? `<div class="two-col">
+        ${revHasSem() ? `<div><label>Semester</label><select id="im_sem">${revSemesters().map(m=>`<option value="${m.id}" ${m.id===sem?'selected':''}>${esc(m.name)}</option>`).join('')}</select></div>` : ''}
+        <div><label>Lesson</label><input id="im_lesson" type="number" min="1" max="999" inputmode="numeric" value="${lesson}"></div></div>` : ''}
+      <textarea id="im_text" rows="7" placeholder="Paste your lines here"></textarea>
+      <div id="im_result" class="modal-sub" style="margin:0;"></div>
+    </div>
+    <div class="modal-actions"><button class="btn" onclick="doImport()">Create cards</button></div>`);
+}
+function copyAiPrompt(){
+  const done = ()=>showToast('Prompt copied');
+  try{ navigator.clipboard.writeText(AI_PROMPT).then(done, ()=>fallbackCopy()); }catch(e){ fallbackCopy(); }
+  function fallbackCopy(){
+    const ta = document.createElement('textarea'); ta.value = AI_PROMPT; document.body.appendChild(ta); ta.select();
+    try{ document.execCommand('copy'); done(); }catch(e){ showToast('Could not copy'); }
+    ta.remove();
+  }
+}
+// "1 && Question && Answer && link"  (also "Question && Answer")
+function parseImportText(text){
+  const cards = [], bad = [];
+  String(text||'').split(/\r?\n/).forEach((raw, i)=>{
+    let line = raw.trim().replace(/^[-*•]\s+/, '');
+    if(!line || line.startsWith('#')) return;
+    const p = line.split('&&').map(x=>x.trim());
+    let group = 0, q, a, img = '';
+    if(p.length===2){ [q, a] = p; }
+    else if(p.length>=3 && (p[0]==='' || /^\d+$/.test(p[0]))){ group = parseInt(p[0], 10) || 0; q = p[1]; a = p[2]; img = p[3] || ''; }
+    else if(p.length===3 && /^https?:\/\//i.test(p[2])){ q = p[0]; a = p[1]; img = p[2]; }
+    else { bad.push(i+1); return; }
+    if(!q || !a){ bad.push(i+1); return; }
+    cards.push({q, a, img, group});
+  });
+  return {cards, bad};
+}
+async function doImport(){
+  const key = document.getElementById('im_subject').value;
+  const s = revSubjects().find(x=>x.key===key);
+  const {cards, bad} = parseImportText(document.getElementById('im_text').value);
+  const res = document.getElementById('im_result');
+  if(!cards.length){ res.textContent = bad.length ? `Couldn't read line${bad.length===1?'':'s'} ${bad.slice(0,8).join(', ')}. Use: Group Number && Question && Answer && Image Link` : 'Paste at least one line first.'; return; }
+  const semEl = document.getElementById('im_sem'), lsEl = document.getElementById('im_lesson');
+  const semId = semEl ? semEl.value : null;
+  const lesson = lsEl ? Math.max(1, parseInt(lsEl.value, 10) || 1) : 1;
+  const row = subjectRowFor(s, semId);
+  let made = 0;
+  for(const c of cards){
+    const extra = {}; if(semId) extra.semester_id = semId; if(lsEl) extra.lesson = lesson; extra.quiz_group = c.group;
+    const ok = await dbAddFlashcard(row, c.q, c.a, c.img, extra, true);
+    if(ok) made++;
+  }
+  await refreshCurrentSchool();
+  closeModal();
+  showToast(`Created ${noun(made, 'card', 'cards')}` + (bad.length ? ` · skipped ${noun(bad.length, 'line', 'lines')}` : '') + ' — they are in the mock quiz too');
+  rerender();
+}
+
 /* ---- Flashcard round ---- */
-function startFlash(subjectId, onlyIds){
-  const s = S().subjects.find(x=>x.id===subjectId);
-  if(!s) return;
-  const pool = onlyIds ? s.flashcards.filter(c=>onlyIds.includes(c.id)) : s.flashcards;
-  fc = {subjectId, ids: shuffle(pool.map(c=>c.id)), pos:0, flipped:false, right:0, wrong:0, missed:[], practice: !!onlyIds, saved:false};
-  revView = 'detail';
+function startFlash(onlyIds){
+  const s = revSubject(); if(!s) return;
+  const pool = scopeCards(s).filter(c=>!onlyIds || onlyIds.includes(c.id));
+  fc = {ids: shuffle(pool.map(c=>c.id)), pos:0, flipped:false, right:0, wrong:0, missed:[], practice:!!onlyIds, saved:false, timedOut:false, secondsLeft:0};
+  studyStage = 'active';
+  if(revTimed){
+    fc.secondsLeft = revMinutes*60;
+    flashTimerId = setInterval(()=>{
+      if(!fc){ clearInterval(flashTimerId); flashTimerId = null; return; }
+      fc.secondsLeft--;
+      if(fc.secondsLeft<=0){
+        fc.secondsLeft = 0; clearInterval(flashTimerId); flashTimerId = null;
+        const left = fc.ids.length - fc.pos;
+        if(left>0){ fc.wrong += left; fc.timedOut = left; fc.pos = fc.ids.length; }
+        finishFlash(); renderReviewers();
+        return;
+      }
+      const el = document.getElementById('flashTimerDisplay');
+      if(el) el.textContent = formatQuizTime(fc.secondsLeft);
+    }, 1000);
+  }
+  renderReviewers();
 }
 function flashFlip(){ if(fc){ fc.flipped = !fc.flipped; renderReviewers(); } }
 function flashJudge(ok){
@@ -1332,15 +1591,15 @@ function flashJudge(ok){
   const id = fc.ids[fc.pos];
   if(ok) fc.right++; else { fc.wrong++; fc.missed.push(id); }
   fc.pos++; fc.flipped = false;
-  if(fc.pos>=fc.ids.length) finishFlash();
+  if(fc.pos>=fc.ids.length){ if(flashTimerId){ clearInterval(flashTimerId); flashTimerId = null; } finishFlash(); }
   renderReviewers();
 }
 function finishFlash(){
   if(!fc || fc.saved) return;
   fc.saved = true;
   if(!fc.practice && (fc.right+fc.wrong)>0){
-    const s = S().subjects.find(x=>x.id===fc.subjectId);
-    histAdd({kind:'flash', subjectId:fc.subjectId, subject:s?s.name:'', correct:fc.right, wrong:fc.wrong, total:fc.right+fc.wrong});
+    const s = revSubject();
+    histAdd({kind:'flash', subjectId:revKey, subject:s?s.name:'', scope:scopeLabel(), correct:fc.right, wrong:fc.wrong, total:fc.right+fc.wrong});
   }
 }
 
@@ -1358,31 +1617,29 @@ function resultBox(title, right, wrong, note){
 }
 
 function renderFlashRound(s){
-  let html = `<button class="btn ghost sm" onclick="revBack()" style="margin-bottom:16px;">‹ Back to subjects</button>
-    <div class="section-label" style="margin-top:0;">${esc(s.name)}</div>`;
-  if(!fc || s.flashcards.length===0){
-    return html + `<p style="color:var(--ink-soft);">No flashcards yet for this subject.</p>`;
-  }
-  // skip cards that were deleted in the middle of a round
-  while(fc.pos<fc.ids.length && !s.flashcards.some(c=>c.id===fc.ids[fc.pos])) fc.pos++;
+  let html = `<button class="btn ghost sm" onclick="revBack()" style="margin-bottom:16px;">‹ Back</button>
+    <div class="section-label" style="margin-top:0;">${esc(s.name)}${scopeLabel() ? ' · ' + esc(scopeLabel()) : ''}</div>`;
+  while(fc.pos<fc.ids.length && !s.cards.some(c=>c.id===fc.ids[fc.pos])) fc.pos++;
   if(fc.pos>=fc.ids.length){
     finishFlash();
     const total = fc.right+fc.wrong;
-    html += resultBox(fc.practice ? 'Practice finished' : 'Round complete', fc.right, fc.wrong,
-      total===0 ? 'Nothing to review.' : (fc.practice ? 'Practice rounds are not added to your history.' : 'Saved to your history progress.'));
+    let note = total===0 ? 'Nothing to review.' : (fc.practice ? 'Practice rounds are not added to your history.' : 'Saved to your history progress.');
+    if(fc.timedOut) note = `Time’s up — ${noun(fc.timedOut, 'card', 'cards')} not answered counted as wrong. ` + note;
+    html += resultBox(fc.practice ? 'Practice finished' : (fc.timedOut ? 'Time’s up' : 'Round complete'), fc.right, fc.wrong, note);
     html += `<div class="result-actions">
-      <button class="btn" onclick="startFlash('${s.id}');renderReviewers()">Study again</button>
-      ${fc.missed.length ? `<button class="btn ghost" onclick="startFlash('${s.id}', fc.missed.slice());renderReviewers()">Practice missed (${fc.missed.length})</button>` : ''}
-      <button class="btn ghost" onclick="revBack()">Back to subjects</button>
+      <button class="btn" onclick="startFlash()">Study again</button>
+      ${fc.missed.length ? `<button class="btn ghost" onclick="startFlash(fc.missed.slice())">Practice missed (${fc.missed.length})</button>` : ''}
+      <button class="btn ghost" onclick="revBack()">Back</button>
     </div>`;
     return html;
   }
-  const c = s.flashcards.find(x=>x.id===fc.ids[fc.pos]);
+  const c = s.cards.find(x=>x.id===fc.ids[fc.pos]);
   const total = fc.ids.length;
-  const imgHtml = (c.image && !fc.flipped) ? `<img loading="lazy" decoding="async" src="${safeUrl(c.image)}" alt="" style="max-width:100%;max-height:180px;border-radius:12px;margin-bottom:14px;object-fit:contain;">` : '';
-  html += `<div class="flash-progress"><span>${fc.pos+1} / ${total}</span><div class="bar"><i style="width:${Math.round(fc.pos/total*100)}%"></i></div></div>
+  const imgHtml = c.image ? `<img loading="lazy" decoding="async" src="${safeUrl(c.image)}" alt="" style="max-width:100%;max-height:180px;border-radius:12px;margin-bottom:14px;object-fit:contain;">` : '';
+  html += `<div class="flash-progress"><span>${fc.pos+1} / ${total}</span><div class="bar"><i style="width:${Math.round(fc.pos/total*100)}%"></i></div>
+      ${revTimed?`<span id="flashTimerDisplay" class="tag due" style="font-family:'Manrope';font-weight:700;margin:0;">${formatQuizTime(fc.secondsLeft)}</span>`:''}</div>
     <div class="flash-card ${fc.flipped?'is-flipped':''}" onclick="flashFlip()">
-      <div style="display:flex;flex-direction:column;align-items:center;">${imgHtml}<div>${esc(fc.flipped ? c.a : c.q)}</div></div>
+      <div style="display:flex;flex-direction:column;align-items:center;">${fc.flipped ? '' : imgHtml}<div>${esc(fc.flipped ? c.a : c.q)}</div></div>
     </div>`;
   if(!fc.flipped){
     html += `<p class="flash-hint">Tap the card to see the answer</p>`;
@@ -1392,15 +1649,35 @@ function renderFlashRound(s){
       <button class="judge right" onclick="flashJudge(true)" aria-label="I got it"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></button>
     </div>`;
   }
-  if(isAdmin){
-    html += `<div class="flash-admin">
-      <button class="btn ghost sm" onclick="openFlashcardModal('${s.id}','${c.id}')">Edit card</button>
-      <button class="btn danger sm" onclick="deleteFlashcard('${c.id}')">Delete card</button>
-    </div>`;
-  }
   return html;
 }
 
+/* ---- Study setup (timer choice) ---- */
+function renderStudySetup(s, count, title, extraNote){
+  return `
+    <button class="btn ghost sm" onclick="revBack()" style="margin-bottom:16px;">‹ Back</button>
+    <div class="card">
+      <h3>${esc(s.name)} — ${title}</h3>
+      <p style="color:var(--ink-soft);font-size:calc(13px * var(--fs));margin-bottom:4px;">${esc(scopeLabel())}</p>
+      <p style="color:var(--ink-soft);font-size:calc(13px * var(--fs));">${noun(count, revMode==='quiz'?'question':'card', revMode==='quiz'?'questions':'cards')} ready.${extraNote||''}</p>
+      ${count===0 ? `<p style="color:var(--ink-soft);margin-top:12px;">${revMode==='quiz' ? 'Add at least 2 flashcards with different answers here to unlock the mock quiz.' : 'No flashcards here yet.'}</p>` : `
+      <div class="section-label" style="margin-top:18px;">Timer</div>
+      <div class="quiz-setup-options">
+        <button class="quiz-setup-opt ${!revTimed?'active':''}" onclick="revTimed=false;renderReviewers()">No Timer</button>
+        <button class="quiz-setup-opt ${revTimed?'active':''}" onclick="revTimed=true;renderReviewers()">Timer</button>
+      </div>
+      ${revTimed?`
+        <div class="section-label">Minutes</div>
+        <input type="number" min="1" max="180" value="${revMinutes}" style="max-width:130px;" onchange="revMinutes=Math.max(1,parseInt(this.value)||10)">
+      `:''}
+      <button class="btn" style="margin-top:20px;display:block;width:100%;" onclick="${revMode==='quiz' ? 'startQuiz()' : 'startFlash()'}">${revMode==='quiz' ? 'Start Quiz' : 'Start'}</button>
+      `}
+    </div>`;
+}
+
+/* =========================================================
+   MAIN RENDER
+========================================================= */
 function renderReviewers(){
   const study = revMode==='flashcards' || revMode==='quiz';
   const addLabel = revMode==='quiz' ? '+ Add question' : '+ Add card';
@@ -1413,125 +1690,219 @@ function renderReviewers(){
   </div>
   <div class="rev-tools">
     <button class="rev-tool ${revMode==='pomodoro'?'active':''}" onclick="revSetMode('pomodoro')">${icoTimer}<span>Pomodoro Timer</span></button>
-    <button class="rev-tool ${revMode==='history'?'active':''}" onclick="revSetMode('history')">${icoProg}<span>History progress</span></button>
+    <button class="rev-tool ${revMode==='history'?'active':''}" onclick="revSetMode('history')">${icoProg}<span>History Progress</span></button>
   </div>`;
 
   if(revMode==='pomodoro'){ setPageContent(html + pomodoroHtml()); return; }
   if(revMode==='history'){ setPageContent(html + historyHtml()); return; }
 
-  if(S().subjects.length===0){
+  if(revSubjects().length===0){
     setPageContent(html + `<p style="color:var(--ink-soft);">No subjects yet.</p>`);
     return;
   }
+  // a subject that no longer exists (e.g. after switching school)
+  if(revKey && !revSubject()){ revKey = null; revSem = null; revLesson = null; }
 
+  const icoNote = `<svg viewBox="0 0 24 24"><path d="M6 3h11a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6zM6 3v18M10 8h5M10 12h5"/></svg>`;
+  if(isAdmin){
+    html += `<div class="edit-tools">
+      ${scopeChosen() ? `<button class="tool-btn ${selMode?'on':''}" onclick="toggleSelMode()" aria-label="Select cards"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8 12.5l3 3 5-6"/></svg><span>${selMode?'Done':'Select'}</span></button>` : ''}
+      <button class="tool-btn" onclick="openFormatBox()" aria-label="Paste format">${icoNote}<span>Format</span></button>
+    </div>`;
+  }
+
+  const s = revSubject();
+  if(!s){ setPageContent(html + renderRevSubjectList()); return; }
+  if(revSem===null){ setPageContent(html + renderSemesterList(s)); return; }
+  if(revLesson===null){ setPageContent(html + renderLessonList(s)); return; }
+
+  // ---- scope chosen ----
+  if(isAdmin){
+    setPageContent(html + (revMode==='quiz' ? renderQuizEditList(s) : renderCardEditList(s)));
+    return;
+  }
+  const cards = scopeCards(s);
   if(revMode==='flashcards'){
-    if(revView==='list' || !fc){
-      html += renderRevSubjectList('flashcards');
-    } else {
-      const s = S().subjects.find(x=>x.id===revSubjectId);
-      html += s ? renderFlashRound(s) : renderRevSubjectList('flashcards');
+    if(studyStage==='active' && fc) html += renderFlashRound(s);
+    else html += renderStudySetup(s, cards.length, 'Flashcards');
+  } else {
+    if(studyStage==='setup'){
+      const built = buildQuiz(s, cards);
+      html += renderStudySetup(s, built.questions.length, 'Mock Quiz',
+        built.skipped ? ` ${noun(built.skipped, 'card', 'cards')} can’t be a question yet (a group needs at least 2 different answers).` : '');
     }
-    setPageContent(html);
-    return;
+    else if(studyStage==='active') html += renderQuizActive(s);
+    else html += renderQuizResults(s);
   }
-
-  // ---- Mock Quiz ----
-  if(quizStage==='list'){
-    html += renderRevSubjectList('quiz');
-    setPageContent(html);
-    return;
-  }
-  const s = S().subjects.find(x=>x.id===revSubjectId);
-  if(!s){ quizStage = 'list'; html += renderRevSubjectList('quiz'); setPageContent(html); return; }
-  if(quizStage==='setup') html += renderQuizSetup(s);
-  else if(quizStage==='active') html += renderQuizActive(s);
-  else if(quizStage==='results') html += renderQuizResults(s);
   setPageContent(html);
 }
 
-function renderRevSubjectList(mode){
-  let html = `<div class="section-label">${mode==='flashcards'?'Choose a subject to review':'Choose a subject to test yourself'}</div>
-  <div class="hub-list">`;
-  S().subjects.forEach(s=>{
-    const count = s.flashcards.length;
-    const last = histLast(s.id, mode==='flashcards' ? 'flash' : 'quiz');
-    let line;
-    if(mode==='flashcards') line = `${count} ${count===1?'flashcard':'flashcards'}`;
-    else line = count>=2 ? `${count} questions` : 'Needs at least 2 flashcards';
+/* ---- navigation lists ---- */
+function navRow(onclick, colorOrNull, title, sub){
+  return `<div class="hub-row ${colorOrNull?'colored':''}" ${colorOrNull?`style="--c:${safeColor(colorOrNull)}"`:''} onclick="${onclick}">
+    <div class="hub-text"><h4>${title}</h4><p>${sub}</p></div><span class="hub-arrow">›</span></div>`;
+}
+function renderRevSubjectList(){
+  let html = `<div class="section-label">${isAdmin ? 'Choose a subject to manage' : (revMode==='flashcards' ? 'Choose a subject to review' : 'Choose a subject to test yourself')}</div><div class="hub-list">`;
+  revSubjects().forEach((s, i)=>{
+    const last = (!isAdmin) ? histLast(s.key, revMode==='flashcards' ? 'flash' : 'quiz') : null;
+    let line = noun(s.cards.length, revMode==='quiz'?'question':'flashcard', revMode==='quiz'?'questions':'flashcards');
     if(last!==null) line += ` · last ${last}%`;
-    html += `<div class="hub-row" onclick="revOpenSubject('${s.id}')">
-      <div class="chip" style="background:${esc(s.color)}">${esc(s.code.slice(0,4))}</div>
-      <div class="hub-text">
-        <h4>${esc(s.name)}</h4>
-        <p>${line}</p>
-      </div>
-      <span class="hub-arrow">›</span>
-    </div>`;
+    html += navRow(`revOpenSubject(${i})`, s.color, esc(s.name), line);
   });
+  return html + `</div>`;
+}
+function backBtn(){ return `<button class="btn ghost sm" onclick="revBack()" style="margin-bottom:16px;">‹ Back</button>`; }
+function renderSemesterList(s){
+  let html = backBtn() + `<div class="section-label" style="margin-top:0;">${esc(s.name)}</div><div class="hub-list">`;
+  revSemesters().forEach(m=>{
+    const n = s.cards.filter(c=>c.semesterId===m.id).length;
+    html += navRow(`revPickSem('${m.id}')`, null, esc(m.name), noun(n, revMode==='quiz'?'question':'card', revMode==='quiz'?'questions':'cards'));
+  });
+  html += navRow(`revPickSem('all')`, null, 'All Semester', noun(s.cards.length, revMode==='quiz'?'question':'card', revMode==='quiz'?'questions':'cards') + ' from every semester');
+  return html + `</div>`;
+}
+function renderLessonList(s){
+  const lessons = lessonsOf(s, revSem);
+  const inSem = s.cards.filter(c=>c.semesterId===revSem);
+  const what = n => noun(n, revMode==='quiz'?'question':'card', revMode==='quiz'?'questions':'cards');
+  let html = backBtn() + `<div class="section-label" style="margin-top:0;">${esc(s.name)} · ${esc(semNameOf(revSem))}</div><div class="hub-list">`;
+  lessons.forEach(n=>{ html += navRow(`revPickLesson(${n})`, null, 'Lesson ' + n, what(inSem.filter(c=>c.lesson===n).length)); });
+  html += navRow(`revPickLesson('all')`, null, 'All Lesson', what(inSem.length) + ' in this semester');
   html += `</div>`;
+  if(!lessons.length) html += `<p style="color:var(--ink-soft);margin-top:14px;">No lessons yet in this semester.${isAdmin ? ' Add a card to start Lesson 1.' : ''}</p>`;
+  if(isAdmin){
+    const next = (lessons.length ? lessons[lessons.length-1] : 0) + 1;
+    html += `<button class="btn ghost sm" style="margin-top:14px;" onclick="openFlashcardModal(null,null,{semesterId:'${revSem}',lesson:${next}})">+ New lesson ${next}</button>`;
+  }
   return html;
 }
 
-/* ---- Quiz questions come from the flashcards ---- */
-function buildQuiz(s){
-  const norm = x=>String(x||'').trim().toLowerCase();
-  const own = s.flashcards.filter(c=>c.q && c.a);
+/* ---- edit lists ---- */
+function selBar(s, cards, quiz){
+  const ico = {
+    transfer: `<svg viewBox="0 0 24 24"><path d="M4 8h14M14 4l4 4-4 4M20 16H6M10 12l-4 4 4 4"/></svg>`,
+    group: `<svg viewBox="0 0 24 24"><circle cx="8" cy="8" r="3.2"/><circle cx="16.5" cy="9" r="2.6"/><path d="M2.5 19c.4-3 2.6-4.8 5.5-4.8s5.1 1.8 5.5 4.8M14.5 14.6c2.7-.5 5.4.9 6 4.4"/></svg>`,
+    del: `<svg viewBox="0 0 24 24"><path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13"/></svg>`
+  };
+  if(!selMode) return '';
+  return `<div class="sel-bar">
+    <button class="link-quiet" onclick="selectAllShown()">${selIds.size===cards.length && cards.length ? 'Clear all' : 'Select all'}</button>
+    <span>${selIds.size} selected</span>
+    <div class="sel-actions">
+      <button onclick="openTransfer()" aria-label="Transfer" title="Transfer to a semester + lesson" ${selIds.size?'':'disabled'}>${ico.transfer}</button>
+      ${quiz && revExt() ? `<button onclick="openBulkGroup()" aria-label="Group" title="Set quiz group" ${selIds.size?'':'disabled'}>${ico.group}</button>` : ''}
+      <button class="danger" onclick="bulkDelete()" aria-label="Delete" title="Delete" ${selIds.size?'':'disabled'}>${ico.del}</button>
+    </div>
+  </div>`;
+}
+function whereTag(c){
+  const bits = [];
+  if(revSem==='all' && revHasSem()) bits.push(semNameOf(c.semesterId));
+  if(revExt() && revLesson==='all') bits.push('Lesson ' + c.lesson);
+  return bits.length ? `<span class="where-tag">${esc(bits.join(' · '))}</span>` : '';
+}
+function cardRowShell(c, inner, actions){
+  const on = selIds.has(c.id);
+  return `<div class="card-row ${selMode?'selectable':''} ${on?'selected':''}" ${selMode?`onclick="toggleSel('${c.id}')"`:''}>
+    ${selMode ? `<span class="sel-box ${on?'on':''}"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>` : ''}
+    <div class="card-row-body">${inner}</div>
+    ${selMode ? '' : `<div class="card-row-actions">${actions}</div>`}
+  </div>`;
+}
+function renderCardEditList(s){
+  const cards = scopeCards(s);
+  let html = backBtn() + `<div class="section-label" style="margin-top:0;">${esc(s.name)}${scopeLabel() ? ' · ' + esc(scopeLabel()) : ''}</div>`;
+  html += selBar(s, cards, false);
+  if(!cards.length) return html + `<p style="color:var(--ink-soft);">No flashcards here yet. Use + Add card, or the Format button to paste many at once.</p>`;
+  html += `<div class="card-list">` + cards.map(c=>cardRowShell(c, `
+      ${whereTag(c)}${c.group ? `<span class="group-chip">Group ${c.group}</span>` : ''}
+      <div class="cr-q">${esc(c.q)}</div>
+      <div class="cr-a">${esc(c.a)}</div>
+      ${c.image ? `<img class="cr-img" loading="lazy" decoding="async" src="${safeUrl(c.image)}" alt="">` : ''}`,
+    `<button class="icon-btn" onclick="event.stopPropagation();openFlashcardModal('${c.id}')" aria-label="Edit">✎</button>
+     <button class="icon-btn danger" onclick="event.stopPropagation();deleteFlashcard('${c.id}')" aria-label="Delete">✕</button>`)).join('') + `</div>`;
+  return html;
+}
+function choiceCount(s, c){
+  const all = s.cards.filter(x=>x.q && x.a);
+  const pool = new Set();
+  const mates = c.group ? all.filter(x=>x.group===c.group && x.id!==c.id) : all.filter(x=>x.id!==c.id);
+  mates.forEach(x=>{ const k = normAns(x.a); if(k && k!==normAns(c.a)) pool.add(k); });
+  return Math.min(4, pool.size + 1);
+}
+function renderQuizEditList(s){
+  const cards = scopeCards(s);
+  const g = groupsOf(s), nums = Object.keys(g).map(Number).sort((a,b)=>a-b);
+  let html = backBtn() + `<div class="section-label" style="margin-top:0;">${esc(s.name)}${scopeLabel() ? ' · ' + esc(scopeLabel()) : ''}</div>`;
+  if(revExt()){
+    html += `<p class="modal-sub" style="margin:0 0 10px;">Put questions in a group so their multiple-choice answers only come from that group. No group = answers come from everything (4 choices).</p>
+      <div class="group-summary">${nums.length ? nums.map(n=>`<span class="group-chip">Group ${n} · ${g[n]}</span>`).join('') : '<span style="color:var(--ink-soft);font-size:calc(12.5px * var(--fs));">No groups yet — pick “New group” on a question, or use Select → group icon.</span>'}</div>`;
+  }
+  html += selBar(s, cards, true);
+  if(!cards.length) return html + `<p style="color:var(--ink-soft);">No questions here yet. Questions are your flashcards — add one with + Add question.</p>`;
+  html += `<div class="card-list">` + cards.map(c=>{
+    const n = choiceCount(s, c);
+    const warn = n<2;
+    return cardRowShell(c, `
+      ${whereTag(c)}
+      <div class="cr-q">${esc(c.q)}</div>
+      ${c.image ? `<img class="cr-img" loading="lazy" decoding="async" src="${safeUrl(c.image)}" alt="">` : ''}
+      <div class="cr-a">✓ ${esc(c.a)}</div>
+      <div class="cr-meta ${warn?'warn':''}">${warn ? 'Needs at least 2 different answers in its group' : n + ' choices'}</div>
+      ${revExt() && !selMode ? `<select class="group-select" onclick="event.stopPropagation()" onchange="setCardGroup('${c.id}', this.value)">${groupOptionsHtml(s, c.group)}</select>` : (c.group ? `<span class="group-chip">Group ${c.group}</span>` : '')}`,
+    `<button class="icon-btn" onclick="event.stopPropagation();openFlashcardModal('${c.id}')" aria-label="Edit">✎</button>
+     <button class="icon-btn danger" onclick="event.stopPropagation();deleteFlashcard('${c.id}')" aria-label="Delete">✕</button>`);
+  }).join('') + `</div>`;
+  return html;
+}
+
+/* =========================================================
+   MOCK QUIZ (made from flashcards)
+   - Same answer text (any capitals / spacing) never appears twice in one question.
+   - A question with a group takes its other choices only from that group
+     (2–4 choices, depending on how many different answers the group has).
+   - A question with no group gets 4 choices picked at random.
+========================================================= */
+function buildQuiz(s, cards){
+  const all = s.cards.filter(c=>c.q && c.a);
   const others = [];
-  S().subjects.forEach(o=>{ if(o.id!==s.id) o.flashcards.forEach(c=>{ if(c.a) others.push(c.a); }); });
-  const out = [];
-  own.forEach(c=>{
-    const seen = new Set([norm(c.a)]);
+  revSubjects().forEach(o=>{ if(o.key!==s.key) o.cards.forEach(c=>{ if(c.a) others.push(c.a); }); });
+  const out = []; let skipped = 0;
+  (cards || all).filter(c=>c.q && c.a).forEach(c=>{
+    const seen = new Set([normAns(c.a)]);
     const wrong = [];
     const take = list=>{
       for(const a of shuffle(list)){
         if(wrong.length>=3) break;
-        const k = norm(a);
+        const k = normAns(a);
         if(!k || seen.has(k)) continue;
         seen.add(k); wrong.push(a);
       }
     };
-    take(own.filter(o=>o.id!==c.id).map(o=>o.a));   // other answers from this subject first
-    if(wrong.length<3) take(others);                 // then answers from other subjects
-    if(!wrong.length) return;                        // nothing to choose between
+    if(c.group){
+      take(all.filter(o=>o.group===c.group && o.id!==c.id).map(o=>o.a));
+    } else {
+      take(all.filter(o=>o.id!==c.id).map(o=>o.a));
+      if(wrong.length<3) take(others);
+    }
+    if(!wrong.length){ skipped++; return; }
     const choices = shuffle([c.a].concat(wrong));
     out.push({id:c.id, q:c.q, choices, answer:choices.indexOf(c.a), image:c.image});
   });
-  return shuffle(out);
+  return {questions: shuffle(out), skipped};
 }
 
-/* ---- Quiz setup (timer choice) ---- */
-function renderQuizSetup(s){
-  const n = buildQuiz(s).length;
-  return `
-    <button class="btn ghost sm" onclick="revBack()" style="margin-bottom:16px;">‹ Back to subjects</button>
-    <div class="card">
-      <h3>${esc(s.name)} — Mock Quiz</h3>
-      <p style="color:var(--ink-soft);font-size:calc(13px * var(--fs));">${n} question${n!==1?'s':''} made from this subject’s flashcards, with the choices mixed up every time.</p>
-      ${n===0 ? `<p style="color:var(--ink-soft);margin-top:12px;">Add at least 2 flashcards with different answers to unlock the mock quiz.</p>` : `
-      <div class="section-label" style="margin-top:18px;">Timer</div>
-      <div class="quiz-setup-options">
-        <button class="quiz-setup-opt ${!quizTimed?'active':''}" onclick="quizTimed=false;renderReviewers()">No Timer</button>
-        <button class="quiz-setup-opt ${quizTimed?'active':''}" onclick="quizTimed=true;renderReviewers()">Timer</button>
-      </div>
-      ${quizTimed?`
-        <div class="section-label">Minutes</div>
-        <input type="number" min="1" max="180" value="${quizMinutes}" style="max-width:130px;" onchange="quizMinutes=Math.max(1,parseInt(this.value)||10)">
-      `:''}
-      <button class="btn" style="margin-top:20px;" onclick="startQuiz('${s.id}')">Start Quiz</button>
-      `}
-    </div>
-  `;
-}
-
-function startQuiz(subjectId){
-  const s = S().subjects.find(x=>x.id===subjectId);
-  quizQuestions = buildQuiz(s);
+function startQuiz(){
+  const s = revSubject(); if(!s) return;
+  const built = buildQuiz(s, scopeCards(s));
+  quizQuestions = built.questions; quizSkipped = built.skipped;
   if(!quizQuestions.length){ renderReviewers(); return; }
   quizIndex = 0;
   quizAnswers = new Array(quizQuestions.length).fill(null);
-  quizStage = 'active';
-  if(quizTimed){
-    quizSecondsLeft = quizMinutes*60;
+  studyStage = 'active';
+  if(revTimed){
+    quizSecondsLeft = revMinutes*60;
     startQuizTimer();
   }
   renderReviewers();
@@ -1558,14 +1929,13 @@ function formatQuizTime(sec){
   return `${m}:${String(s).padStart(2,'0')}`;
 }
 
-/* ---- Quiz active (one question at a time) ---- */
 function renderQuizActive(s){
   const q = quizQuestions[quizIndex];
   const selected = quizAnswers[quizIndex];
   return `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
       <span style="font-size:calc(12.5px * var(--fs));color:var(--ink-soft);">Question ${quizIndex+1} of ${quizQuestions.length}</span>
-      ${quizTimed?`<span id="quizTimerDisplay" class="tag due" style="font-family:'Manrope';font-weight:700;">${formatQuizTime(quizSecondsLeft)}</span>`:''}
+      ${revTimed?`<span id="quizTimerDisplay" class="tag due" style="font-family:'Manrope';font-weight:700;">${formatQuizTime(quizSecondsLeft)}</span>`:''}
     </div>
     <div class="card">
       ${q.image?`<img loading="lazy" decoding="async" src="${safeUrl(q.image)}" alt="" style="max-width:100%;max-height:220px;border-radius:12px;margin-bottom:10px;object-fit:contain;display:block;">`:''}
@@ -1586,16 +1956,15 @@ function selectQuizAnswer(ci){
 }
 function finishQuiz(){
   stopQuizTimer();
-  if(quizStage!=='active') return;
-  quizStage = 'results';
+  if(studyStage!=='active') return;
+  studyStage = 'results';
   let correct = 0;
   quizQuestions.forEach((q,i)=>{ if(quizAnswers[i]===q.answer) correct++; });
-  const s = S().subjects.find(x=>x.id===revSubjectId);
-  histAdd({kind:'quiz', subjectId:revSubjectId, subject:s?s.name:'', correct, wrong:quizQuestions.length-correct, total:quizQuestions.length});
+  const s = revSubject();
+  histAdd({kind:'quiz', subjectId:revKey, subject:s?s.name:'', scope:scopeLabel(), correct, wrong:quizQuestions.length-correct, total:quizQuestions.length});
   renderReviewers();
 }
 
-/* ---- Quiz results ---- */
 function renderQuizResults(s){
   let correct = 0;
   quizQuestions.forEach((q,i)=>{ if(quizAnswers[i]===q.answer) correct++; });
@@ -1618,8 +1987,8 @@ function renderQuizResults(s){
   });
   html += `
     <div class="result-actions">
-      <button class="btn" onclick="startQuiz('${s.id}')">Retake</button>
-      <button class="btn ghost" onclick="revBack()">Back to subjects</button>
+      <button class="btn" onclick="startQuiz()">Retake</button>
+      <button class="btn ghost" onclick="revBack()">Back</button>
     </div>
   `;
   return html;

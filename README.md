@@ -98,3 +98,8 @@ npm run open         # opens Android Studio → Build → Build APK(s)
 - **Faster loading**: `npm run build` minifies everything into `www/`. The service worker keeps the app files and images on the device.
 - **Pomodoro alarm on Android**: add `<uses-permission android:name="android.permission.VIBRATE"/>` to `android/app/src/main/AndroidManifest.xml` (next to the INTERNET permission), then `npm run sync`.
 - **Optional GitHub Pages deploy of the minified build**: Settings → Pages → Source: "GitHub Actions" (uses `.github/workflows/pages.yml`).
+
+## Reviewers update (lessons, groups, notifications)
+- Run **migration_reviewers.sql** once in Supabase → SQL Editor (adds semester, lesson and quiz-group columns to flashcards). Without it the app still works, just without lessons/groups.
+- Put `alarm.wav` (activity reminders and Pomodoro) and `alarm2.wav` (class reminders) in `android/app/src/main/res/raw/` too, then `npm run sync`.
+- Reviewers → pencil on shows the card / quiz-question lists; the Format button explains the paste format `Group Number && Question && Answer && Image Link`.
