@@ -1779,6 +1779,29 @@ function renderLessonList(s){
 }
 
 /* ---- edit lists ---- */
+/* Cards for the edit lists: grouped by quiz group (Group 1, 2, … then No group), each group keeps its own order */
+function cardsByGroup(cards){
+  const m = new Map();
+  cards.forEach(c=>{ const g = c.group || 0; if(!m.has(g)) m.set(g, []); m.get(g).push(c); });
+  const keys = [...m.keys()].sort((a,b)=> (a===0) - (b===0) || a - b);
+  return keys.map(g=>({group:g, cards:m.get(g)}));
+}
+function groupHeadHtml(g, list){
+  if(!revExt()) return '';
+  const ids = list.map(c=>c.id);
+  const all = ids.length && ids.every(id=>selIds.has(id));
+  return `<div class="group-head" style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:16px 0 8px;">
+    <span class="section-label" style="margin:0;">${g ? 'Group ' + g : 'No group'} · ${noun(list.length, 'card', 'cards')}</span>
+    ${selMode ? `<button class="link-quiet" onclick="selectGroup(${g})">${all ? 'Clear group' : 'Select group'}</button>` : ''}
+  </div>`;
+}
+function selectGroup(g){
+  const s = revSubject(); if(!s) return;
+  const ids = scopeCards(s).filter(c=>(c.group||0)===g).map(c=>c.id);
+  const all = ids.length && ids.every(id=>selIds.has(id));
+  ids.forEach(id=>{ if(all) selIds.delete(id); else selIds.add(id); });
+  renderReviewers();
+}
 function selBar(s, cards, quiz){
   const ico = {
     transfer: `<svg viewBox="0 0 24 24"><path d="M4 8h14M14 4l4 4-4 4M20 16H6M10 12l-4 4 4 4"/></svg>`,
@@ -1791,7 +1814,7 @@ function selBar(s, cards, quiz){
     <span>${selIds.size} selected</span>
     <div class="sel-actions">
       <button onclick="openTransfer()" aria-label="Transfer" title="Transfer to a semester + lesson" ${selIds.size?'':'disabled'}>${ico.transfer}</button>
-      ${quiz && revExt() ? `<button onclick="openBulkGroup()" aria-label="Group" title="Set quiz group" ${selIds.size?'':'disabled'}>${ico.group}</button>` : ''}
+      ${revExt() ? `<button onclick="openBulkGroup()" aria-label="Group" title="Set quiz group" ${selIds.size?'':'disabled'}>${ico.group}</button>` : ''}
       <button class="danger" onclick="bulkDelete()" aria-label="Delete" title="Delete" ${selIds.size?'':'disabled'}>${ico.del}</button>
     </div>
   </div>`;
@@ -1815,13 +1838,16 @@ function renderCardEditList(s){
   let html = backBtn() + `<div class="section-label" style="margin-top:0;">${esc(s.name)}${scopeLabel() ? ' · ' + esc(scopeLabel()) : ''}</div>`;
   html += selBar(s, cards, false);
   if(!cards.length) return html + `<p style="color:var(--ink-soft);">No flashcards here yet. Use + Add card, or the Format button to paste many at once.</p>`;
-  html += `<div class="card-list">` + cards.map(c=>cardRowShell(c, `
+  const row = c=>cardRowShell(c, `
       ${whereTag(c)}${c.group ? `<span class="group-chip">Group ${c.group}</span>` : ''}
       <div class="cr-q">${esc(c.q)}</div>
       <div class="cr-a">${esc(c.a)}</div>
       ${c.image ? `<img class="cr-img" loading="lazy" decoding="async" src="${safeUrl(c.image)}" alt="">` : ''}`,
     `<button class="icon-btn" onclick="event.stopPropagation();openFlashcardModal('${c.id}')" aria-label="Edit">✎</button>
-     <button class="icon-btn danger" onclick="event.stopPropagation();deleteFlashcard('${c.id}')" aria-label="Delete">✕</button>`)).join('') + `</div>`;
+     <button class="icon-btn danger" onclick="event.stopPropagation();deleteFlashcard('${c.id}')" aria-label="Delete">✕</button>`);
+  cardsByGroup(cards).forEach(grp=>{
+    html += groupHeadHtml(grp.group, grp.cards) + `<div class="card-list">` + grp.cards.map(row).join('') + `</div>`;
+  });
   return html;
 }
 function choiceCount(s, c){
@@ -1841,7 +1867,7 @@ function renderQuizEditList(s){
   }
   html += selBar(s, cards, true);
   if(!cards.length) return html + `<p style="color:var(--ink-soft);">No questions here yet. Questions are your flashcards — add one with + Add question.</p>`;
-  html += `<div class="card-list">` + cards.map(c=>{
+  const qrow = c=>{
     const n = choiceCount(s, c);
     const warn = n<2;
     return cardRowShell(c, `
@@ -1853,7 +1879,10 @@ function renderQuizEditList(s){
       ${revExt() && !selMode ? `<select class="group-select" onclick="event.stopPropagation()" onchange="setCardGroup('${c.id}', this.value)">${groupOptionsHtml(s, c.group)}</select>` : (c.group ? `<span class="group-chip">Group ${c.group}</span>` : '')}`,
     `<button class="icon-btn" onclick="event.stopPropagation();openFlashcardModal('${c.id}')" aria-label="Edit">✎</button>
      <button class="icon-btn danger" onclick="event.stopPropagation();deleteFlashcard('${c.id}')" aria-label="Delete">✕</button>`);
-  }).join('') + `</div>`;
+  };
+  cardsByGroup(cards).forEach(grp=>{
+    html += groupHeadHtml(grp.group, grp.cards) + `<div class="card-list">` + grp.cards.map(qrow).join('') + `</div>`;
+  });
   return html;
 }
 
